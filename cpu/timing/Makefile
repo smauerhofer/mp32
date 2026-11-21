@@ -16,7 +16,7 @@ FREQ    = 42
 SEEDS   = 1 2 3
 
 CORE = ../stage1/fetch.v ../stage1/pc.v ../stage1/irq_sequence.v \
-       ../stage2/decode.v ../stage2/regfile.v ../stage2/sequencer.v \
+       ../stage2/decode.v ../stage2/decoder.v ../stage2/regfile.v ../stage2/sequencer.v \
        ../stage3/execute.v ../stage3/forward.v ../stage3/alu.v ../stage3/mul.v \
        ../stage3/flags.v ../stage3/cond.v ../stage3/stackregs.v ../stage3/scratch.v \
        ../stage3/tmplh.v ../stage4/memaccess.v ../stage4/bram.v ../stage5/writeback.v
@@ -46,7 +46,7 @@ timing: $(addprefix $(BUILD)/pnr_,$(addsuffix .log,$(SEEDS)))
 	done
 
 # the CPU before the LISP opcodes: its decode, sequencer, execute and ALU from old/
-OLD = $(filter-out ../stage2/decode.v ../stage2/sequencer.v ../stage3/execute.v ../stage3/alu.v,$(CORE)) \
+OLD = $(filter-out ../stage2/decode.v ../stage2/decoder.v ../stage2/sequencer.v ../stage3/execute.v ../stage3/alu.v,$(CORE)) \
       old/decode.v old/sequencer.v old/execute.v old/alu.v
 
 $(BUILD)/core_old.json: old/core_old.v $(OLD) lisp_lines.hex

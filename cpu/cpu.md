@@ -203,6 +203,15 @@ control word of execute (see execute.v).
   on operand B, a subtraction is reversed when that is source 1. CMP3 writes the new flags {V, N, Z, C} into the destination (result
   source `d_res` = 6 in execute); its destination cannot be PC.
 - **ROT, DROT:** two steps, by the sequencer (`d_step`).
+- **The decoder and the pre-decode:** all of the above is in `decoder.v`, a function
+  of the instruction, its PC and length, and the step. `decode.v` uses it for the
+  control word of the instruction in `f_*`, and twice more for the registers the
+  operands read (`d_a_use`, `d_a_sel`, `d_b_use`, `d_b_sel`), worked out a tick early
+  and kept in registers: on fetch's next instruction (`f_next_instr`, step 0) and on
+  this one at its next step; `f_load` and `advance` pick one at the end. So the
+  register file reads from a register, not from the end of the decoder. With
+  `MP32_SIM` decode checks every tick that they are what the decoder makes of the
+  instruction in `f_*`.
 - **LISP (0x2C .. 0x33, 0x47, 0x87):** CAR, CDR load into T from T - 1, T + 3 (the
   address through the ALU, as LDR3); RPLACA, RPLACD store S there (the offset on
   `d_imm`, as STR3). CONS is four steps (`d_step` 0 .. 3): 0 the check, L on A, HLIM
@@ -462,7 +471,9 @@ that has not written its register back yet then gives execute the value:
   decode's tick, while the instruction is still in decode, and kept in registers
   (`from_x`, `from_x2`, `from_w`, `from_w2` for each operand). The instruction in
   execute now will be in `x_*`, the one in `x_*` now in `w_*`. Execute only switches
-  a multiplexer. While execute holds, the registers move with the pipeline: a stall
+  a multiplexer. Whether `x_result` may be taken (the instruction there is not a
+  load) is worked out a tick early too, from `e_load` (`a_fxr`, `b_fxr`), so `x_load`
+  is not in the operands' path. While execute holds, the registers move with the pipeline: a stall
   from stage 4 keeps `x_*` and drops `w_*`; a load-use wait moves the load from
   `x_*` to `w_*`.
 - Both writes of an instruction are forwarded: the main one (`x_rd` / `w_sel`) and
@@ -576,10 +587,19 @@ critical paths, each about 17.5 .. 18.3 ns, two thirds of it routing:
 - execute: a register of stage 3 -> ALU b -> the adder -> the result into
   `x_result`.
 
-For 63 MHz both of the first two must get shorter: a pre-decode in fetch's output
-register (the register numbers and the kind of constant worked out a tick early, so
-decode reads the register file straight from a register), and `mem_stall` from a
-register in stage 4 (which costs about a tick per memory access).
+For 63 MHz both of the first two must get shorter: a pre-decode (the registers the
+operands read worked out a tick early, so decode reads the register file straight
+from a register: done, see decode), and `mem_stall` from a register in stage 4
+(which costs about a tick per memory access; not done). The stage-3 value `s3` is
+picked one-hot (`e_s3h`, an AND-OR) to shorten the third path, and the choice of
+`x_result` in forwarding is worked out a tick early (from `e_load`).
+
+After each of these the router found another path of the same length: 52.9 .. 56.2
+MHz with the pre-decode and the one-hot `s3`, 53.6 .. 55.4 MHz with the early
+`x_result` choice too. About two thirds of each path is routing, across a design of
+about 7,000 LUTs: the core sits at about 55 MHz. 63 MHz would take a deeper
+pipeline (more stages, with longer branch penalties and more forwarding), not more
+small cuts. So the computer runs at 42 MHz, with about 25 % to spare.
 
 **Earlier** (before ADD3, LDR3 / STR3, MOV2, ENTER / LEAVE, INCR, ST, the LISP
 opcodes), measured with yosys 0.71 and nextpnr-himbaechel (Gowin, GW2AR-LV18QN88C8/I7),
@@ -640,7 +660,8 @@ critical path is from TMPL / the stack pointers through the ALU's adder to
   no fill.
 - Function of R beyond the return stack's top. (L is the allocation pointer of LISP.)
 - The GC handler at the GC vector (0xF000_0010) in the boot program.
-- 63 MHz: see Timing (a pre-decode in fetch, a registered `mem_stall`).
+- 63 MHz: see Timing. It would need a deeper pipeline; the registered `mem_stall` (a
+  tick per memory access) is not done.
 - `display2`: at 42 and 54 MHz (`make test-clocks`) the video test bench reports 78
   wrong pixels in scrolled.bmp (at 100 MHz none): that picture reads 5 lines past the
   demo pixels, which the processor's random traffic has not written into the SDRAM

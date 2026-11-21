@@ -197,6 +197,7 @@ module execute #(
     reg        e_trap, e_hl_we;
     reg        e_bsel;                 // ALU input b = s3 (a register of stage 3, or d_imm)
     reg        e_short;                // an adder or logic op: its results from ya, flags_s
+    reg [7:0]  e_s3h;                  // d_s3 one-hot: bit k = s3 is source k (timing)
 
     // ================================================================ the operands
     wire        e_valid, load_use;
@@ -206,7 +207,7 @@ module execute #(
         .clk(clk), .reset(reset), .mem_stall(mem_stall), .flush(redirect),
         .d_valid(d_valid), .d_a_use(d_a_use), .d_a_sel(d_a_sel), .d_a_data(d_a_data),
         .d_b_use(d_b_use), .d_b_sel(d_b_sel), .d_b_data(d_b_data),
-        .e_wen(e_wen), .e_rd(e_rd), .e_x2_wen(e_x2_wen), .e_x2_sel(e_x2_sel),
+        .e_wen(e_wen), .e_rd(e_rd), .e_x2_wen(e_x2_wen), .e_x2_sel(e_x2_sel), .e_load(e_load),
         .x_valid(x_valid), .x_wen(x_wen), .x_load(x_load), .x_rd(x_rd),
         .x_result(x_result), .x2_wen(x2_wen), .x2_sel(x2_sel), .x2_data(x2_data),
         .w_en(w_en), .w_sel(w_sel), .w_data(w_data),
@@ -230,6 +231,7 @@ module execute #(
             e_jump <= d_jump;      e_cond <= d_cond;      e_tgt <= d_tgt;
             e_trap <= d_trap;      e_hl_we <= d_hl_we;
             e_bsel <= d_b_s3 | d_b_imm;
+            e_s3h  <= 8'b1 << d_s3;
             e_short <= (d_alu_op <= 5'd6) | (d_alu_op == 5'd26) | (d_alu_op == 5'd27);
         end
 
@@ -286,18 +288,16 @@ module execute #(
     assign hlim = hlim_r;
 
     // ================================================================ the ALU
-    reg  [31:0] s3;
-    always @*
-        case (e_s3)
-            3'd1:    s3 = tmpl;
-            3'd2:    s3 = tmph;
-            3'd3:    s3 = {28'h0, f};                  // ST
-            3'd4:    s3 = psp;
-            3'd5:    s3 = rsp;
-            3'd6:    s3 = fp;
-            3'd7:    s3 = hlim_r;
-            default: s3 = e_imm;                       // d_imm
-        endcase
+    // s3, picked with the one-hot e_s3h (decoded from d_s3 as it is held): an AND-OR,
+    // so each source goes through one level of gates, not a tree of multiplexers
+    wire [31:0] s3 = ({32{e_s3h[0]}} & e_imm)             // d_imm
+                   | ({32{e_s3h[1]}} & tmpl)
+                   | ({32{e_s3h[2]}} & tmph)
+                   | ({32{e_s3h[3]}} & {28'h0, f})        // ST
+                   | ({32{e_s3h[4]}} & psp)
+                   | ({32{e_s3h[5]}} & rsp)
+                   | ({32{e_s3h[6]}} & fp)
+                   | ({32{e_s3h[7]}} & hlim_r);
 
     reg cin;
     always @*

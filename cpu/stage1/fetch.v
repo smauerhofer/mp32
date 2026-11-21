@@ -34,6 +34,9 @@
 // the next edge the PC becomes redirect_pc and f_valid becomes 0: the instruction in
 // f_* is thrown away, even if stall is 1.
 //
+// f_next_instr and f_load tell decode what f_instr will be after the next edge, so it
+// can work out the registers its operands read a tick early (decode.v, the pre-decode).
+//
 // ---------------------------------------------------------------- the line port
 // The same handshake as the cache: fetch sets line_sel and line_addr and holds them
 // until line_ready is 1. That tick ends the access, and line_data is valid during it.
@@ -88,6 +91,8 @@ module fetch #(
     output reg  [31:0]  f_instr,
     output reg  [2:0]   f_len,          // 1..4
     output reg          f_inject,       // from the interrupt sequence, not from memory
+    output wire [31:0]  f_next_instr,   // what f_instr becomes at the next edge ...
+    output wire         f_load,         // ... if f_load (for decode's pre-decode)
 
     // the line port: to the cache
     output reg          line_sel,
@@ -164,6 +169,10 @@ module fetch #(
     );
 
     // ================================================================ f_*
+    // for decode's pre-decode: the instruction that goes into f_* at the next edge
+    assign f_next_instr = inject ? seq_instr : window;
+    assign f_load       = !reset & !redirect & take & (inject | from_mem);
+
     always @(posedge clk) begin
         if (reset | redirect) begin
             f_valid  <= 1'b0;

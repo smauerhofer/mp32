@@ -55,7 +55,8 @@ module decode_tb;
 
     // ---- stage 1: fetch, with the code memory on its line port
     wire         f_valid, f_inject;
-    wire [31:0]  f_pc, f_instr;
+    wire [31:0]  f_pc, f_instr, f_next_instr;
+    wire         f_load;
     wire [2:0]   f_len;
     wire         line_sel;
     wire [31:4]  line_addr;
@@ -69,7 +70,7 @@ module decode_tb;
         .clk(clk), .reset(reset),
         .redirect(redirect), .redirect_pc(redirect_pc), .irq_pending(1'b0),
         .stall(stall), .f_valid(f_valid), .f_pc(f_pc), .f_instr(f_instr), .f_len(f_len),
-        .f_inject(f_inject),
+        .f_inject(f_inject), .f_next_instr(f_next_instr), .f_load(f_load),
         .line_sel(line_sel), .line_addr(line_addr), .line_data(line_data),
         .line_ready(line_ready), .pc(pc)
     );
@@ -111,6 +112,7 @@ module decode_tb;
     decode dec (
         .clk(clk), .reset(reset),
         .f_valid(f_valid), .f_pc(f_pc), .f_instr(f_instr), .f_len(f_len), .stall(stall),
+        .f_next_instr(f_next_instr), .f_load(f_load),
         .advance(advance), .ex_redirect(ex_redirect), .ex_redirect_pc(ex_redirect_pc),
         .redirect(redirect), .redirect_pc(redirect_pc),
         .w_en(w_en), .w_sel(w_sel), .w_data(w_data),

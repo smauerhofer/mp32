@@ -188,7 +188,7 @@ module forward_tb;
         .d_valid(d_valid), .d_a_use(d_a_use), .d_a_sel(d_a_sel), .d_a_data(d_a_val),
         .d_b_use(d_b_use), .d_b_sel(d_b_sel), .d_b_data(b_data),
         .e_wen(e_op != ST), .e_rd(e_rd), .e_x2_wen((e_op == LD2) || (e_op == MV2)),
-        .e_x2_sel(e_sp),
+        .e_x2_sel(e_sp), .e_load((e_op == LD) || (e_op == LD2) || (e_op == RT0)),
         .x_valid(x_valid), .x_wen(x_wen), .x_load(x_load), .x_rd(x_rd),
         .x_result(x_result), .x2_wen(x2_wen), .x2_sel(x2_sel), .x2_data(x2_data),
         .w_en(w_en), .w_sel(w_sel), .w_data(w_data),

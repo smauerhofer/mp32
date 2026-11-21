@@ -87,6 +87,7 @@ module forward (
     input  wire [5:0]  e_rd,
     input  wire        e_x2_wen,
     input  wire [1:0]  e_x2_sel,
+    input  wire        e_load,         // it is a load: in x_* its value is not there yet
 
     // the instruction in stage 4: stage 3's output registers
     input  wire        x_valid,
@@ -119,6 +120,9 @@ module forward (
     // where each operand comes from in execute (worked out a tick early)
     reg a_fx, a_fx2, a_fw, a_fw2;
     reg b_fx, b_fx2, b_fw, b_fw2;
+    // a_fx and the one in x_* is not a load: take x_result (worked out a tick early too,
+    // from e_load, so x_load is not in the operands' path: timing)
+    reg a_fxr, b_fxr;
 
     // ================================================================ in decode's tick
     // the instruction in execute now will be in x_* (if it is valid); the one in
@@ -137,9 +141,9 @@ module forward (
 
     // ================================================================ in execute
     // youngest first (a load in stage 4 has no value yet: load_use waits for it)
-    assign e_a = (a_fx & !x_load) ? x_result : a_fx2 ? x2_data :
+    assign e_a = a_fxr ? x_result : a_fx2 ? x2_data :
                  a_fw ? w_data : a_fw2 ? w2_data : a_val;
-    assign e_b = (b_fx & !x_load) ? x_result : b_fx2 ? x2_data :
+    assign e_b = b_fxr ? x_result : b_fx2 ? x2_data :
                  b_fw ? w_data : b_fw2 ? w2_data : b_val;
 
     assign load_use = e_valid & x_load & (a_fx | b_fx);
@@ -157,6 +161,9 @@ module forward (
             b_val <= d_b_data;
             {a_fx, a_fx2, a_fw, a_fw2} <= {n_a_fx, n_a_fx2, n_a_fw, n_a_fw2};
             {b_fx, b_fx2, b_fw, b_fw2} <= {n_b_fx, n_b_fx2, n_b_fw, n_b_fw2};
+            // at this edge the instruction in execute goes into x_*: x_load = e_load
+            a_fxr <= n_a_fx & !e_load;
+            b_fxr <= n_b_fx & !e_load;
         end else begin                 // holding: keep what is forwarded now
             a_val <= e_a;
             b_val <= e_b;
@@ -166,6 +173,7 @@ module forward (
             end else begin             // load_use: x_* moves to w_*, x_* a bubble
                 {a_fw, a_fw2, a_fx, a_fx2} <= {a_fx, a_fx2, 2'b00};
                 {b_fw, b_fw2, b_fx, b_fx2} <= {b_fx, b_fx2, 2'b00};
+                {a_fxr, b_fxr} <= 2'b00;
             end
         end
     end

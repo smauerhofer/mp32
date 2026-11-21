@@ -9,7 +9,7 @@ BUILD ?= build
 
 # The building blocks of this stage. Test benches pick what they need.
 # wildcard keeps only the files that are already there, so you can build as you go.
-BLOCKS = $(wildcard regfile.v sequencer.v decode.v)
+BLOCKS = $(wildcard regfile.v sequencer.v decoder.v decode.v)
 
 # The sequencer is tested with the real fetch stage, decode with the whole pipeline.
 OTHERS = ../stage1/fetch.v ../stage1/pc.v ../stage1/irq_sequence.v \
@@ -29,7 +29,7 @@ $(BUILD)/%_tb.vvp: %_tb.v $(BLOCKS) $(OTHERS)
 test-%: $(BUILD)/%_tb.vvp
 	cd $(BUILD) && vvp $*_tb.vvp
 
-size: decode.v regfile.v sequencer.v
+size: decode.v decoder.v regfile.v sequencer.v
 	yosys -p "read_verilog $^; synth_gowin -top decode -nowidelut; stat"
 
 clean:
