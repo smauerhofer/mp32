@@ -1,6 +1,6 @@
 # The microSD card of the mp32 computer, in SPI mode: test it, and see what the chip
 # makes of it.
-#   make test          run the test bench (against a model of a card, at 63 MHz)
+#   make test          run the test bench (against a model of a card, at 42 MHz)
 #   make size          synthesize it alone and count what it takes
 #   make clean         throw away what the build made
 #

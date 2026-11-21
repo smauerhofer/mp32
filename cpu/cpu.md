@@ -305,6 +305,16 @@ Test: `stage3/stackregs_tb.v`, run with `make test` in `stage3`.
   instruction sees them with no forwarding. Reset clears them. Carry in: chosen by
   decode, normally the C flag (for ADC, SBC, ROL64, ROR64, and to keep C for ops that
   do not set it).
+- **Two b inputs, two results** (for timing): `b` (operand B, or a register of stage 3,
+  or `d_imm`) goes only to the adder, the logic ops and the 64-bit shifts; `bo` (operand
+  B itself) to the shifter's amount, the divider, the multiply step, the multiplier and
+  TTAG, which never take a register of stage 3. `ya` / `flags_a` are y and the flags of
+  the adder and logic ops alone: execute writes the registers of stage 3 (PSP, RSP, FP,
+  TMPL, TMPH, ST, HLIM), jumps through the ALU and forms ALU addresses from them (its
+  short result `rs`), so no path runs from a register of stage 3 through the divider or
+  multiplier back into one. Before this, the core routed at 49 .. 52 MHz in
+  `timing/core.v` (the same with and without the LISP opcodes), the path being
+  `stackregs` sel -> s3 -> ALU b -> the divider -> y -> r -> FP.
 - `mul.v`: one MULT36X36 of the GW2AR with all its registers bypassed (the product in
   the same tick); signed or unsigned (`sgn`). In simulation (`-DMP32_SIM`, set by the
   Makefile) a plain multiply stands in for it.
@@ -514,18 +524,18 @@ against a reference running one instruction at a time.
   block RAM) and the cache with the SDRAM controller under it, on the SDRAM range;
   the I/O port (`io_*`) and the video port (`vid_*`, row bursts straight from the
   SDRAM, ahead of the cache) go out to their devices; the SDRAM pins too.
-  Parameters: `CLK_MHZ` (63), `CAS`, `RD_LAT`, `EXT_CLK` (see below), the cache's
+  Parameters: `CLK_MHZ` (42), `CAS`, `RD_LAT`, `EXT_CLK` (0; see below), the cache's
   size and write-through region, the block RAM's base, size and `BRAM_INIT`.
-- At 63 MHz the SDRAM is just above the about 60 MHz up to which the inverted clock
-  is enough (sdram.v): `EXT_CLK` = 1 with a phase-shifted clock from the PLL on
-  `clk_sdram`, and `RD_LAT` to go with it, both to be found on the board.
+- At 42 MHz the inverted clock is enough for the SDRAM (up to about 60 MHz, sdram.v):
+  `EXT_CLK` = 0, no second clock. (At 63 MHz it would need `EXT_CLK` = 1, a
+  phase-shifted clock on `clk_sdram` and `RD_LAT` to go with it, found on the board.)
 
 Tests, run with `make test` in `stage4`:
 - `memaccess_tb.v`: the bus played by a model with 1..8 ticks latency.
 - `membus_tb.v`: both masters at once against a cache model, an I/O model and the
   real block RAM; checks every read, the priority, and that no access is broken off.
 - `memsys_tb.v`: the memory system with the real cache and SDRAM controller and the
-  SDRAM model, at 63 MHz: stage 4 (random reads and writes, words and bytes, in four
+  SDRAM model, at 42 MHz: stage 4 (random reads and writes, words and bytes, in four
   SDRAM regions far apart so lines are evicted all the time, one write-through, the
   block RAM, the I/O, the unmapped space), fetch (random line reads) and video row
   bursts all at once; every read checked, everything read back at the end; the
@@ -549,9 +559,30 @@ Test: `stage5/writeback_tb.v`, with the real `stage2/regfile.v`, run with
 
 ## Timing
 
-Target clock: **63 MHz** (15.9 ns).
+Target clock: **42 MHz** (23.8 ns), 126 / 3 (see Clocks). It was 63 MHz (126 / 2);
+the core does not reach that now (below), so the computer is brought up at 42 MHz
+first. Going to 63 MHz later changes only the clock and `CLK_MHZ`, not the CPU.
 
-Measured with yosys 0.71 and nextpnr-himbaechel (Gowin, GW2AR-LV18QN88C8/I7),
+**Now** (`timing/core.v`: the five stages with two 8 KB block RAMs, `make timing` in
+`timing`; yosys 0.71, nextpnr-himbaechel, three seeds): 54.6 .. 56.8 MHz after the
+LISP opcodes and the short result path of execute (49 .. 52 MHz before that, the
+same with and without the LISP opcodes). So 42 MHz has about 25 % to spare. The
+critical paths, each about 17.5 .. 18.3 ns, two thirds of it routing:
+
+- decode: the instruction from fetch -> the big case of decode -> the register
+  file's read address -> the read -> operand B into execute (`fwd.b_val`);
+- the stall network: `x_load` / the bus handshake -> `load_use` / `mem_stall` ->
+  `advance` -> `go` -> the enables of the registers of stage 3 (the flags);
+- execute: a register of stage 3 -> ALU b -> the adder -> the result into
+  `x_result`.
+
+For 63 MHz both of the first two must get shorter: a pre-decode in fetch's output
+register (the register numbers and the kind of constant worked out a tick early, so
+decode reads the register file straight from a register), and `mem_stall` from a
+register in stage 4 (which costs about a tick per memory access).
+
+**Earlier** (before ADD3, LDR3 / STR3, MOV2, ENTER / LEAVE, INCR, ST, the LISP
+opcodes), measured with yosys 0.71 and nextpnr-himbaechel (Gowin, GW2AR-LV18QN88C8/I7),
 `--freq 63`, on the core: fetch, decode, execute, memory access and writeback, with
 two 8 KB block RAMs for code and data (no cache, SDRAM or memory bus yet):
 
@@ -587,15 +618,17 @@ critical path is from TMPL / the stack pointers through the ALU's adder to
 
 ## Clocks
 
-- The processor and the memory system run on one clock, **63 MHz**, `cpu_clk`.
+- The processor and the memory system run on one clock, **42 MHz**, `cpu_clk`.
 - It comes from the display's PLL, which makes 126 MHz (5 x the 25.2 MHz pixel
-  clock, for the HDMI serializer): 126 / 2. Divide it in a PLL (an rPLL's `CLKOUTD`
-  with `SDIV` = 2), not with a flip-flop in the logic, so it is a real clock.
+  clock, for the HDMI serializer): 126 / 3. Divide it in the PLL (the rPLL's
+  `CLKOUTD3`, its fixed divide by 3), not with a flip-flop in the logic, so it is a
+  real clock. (For 63 MHz later: `CLKOUTD` with `SDIV` = 2.)
 - The video unit (`display2/video.v`) already has the processor's clock `cpu_clk`
   apart from its pixel clock, with the handover between them; its SDRAM port is on
   `cpu_clk`.
-- The SDRAM at 63 MHz: just above the about 60 MHz up to which the inverted clock is
-  enough (sdram.v). For `EXT_CLK` = 1 it needs a second 63 MHz clock shifted in
+- The SDRAM at 42 MHz: the inverted clock is enough (`EXT_CLK` = 0, sdram.v). At 63
+  MHz, just above the about 60 MHz up to which it is, `EXT_CLK` = 1 would need a
+  second 63 MHz clock shifted in
   phase. An rPLL shifts only `CLKOUTP` (at the full frequency), so the cleanest is a
   second rPLL (the GW2A-18 has four) giving 63 MHz on `CLKOUT` (`cpu_clk`) and the
   shifted 63 MHz on `CLKOUTP` (`clk_sdram`). The phase and `RD_LAT` must be found on
@@ -607,11 +640,20 @@ critical path is from TMPL / the stack pointers through the ALU's adder to
   no fill.
 - Function of R beyond the return stack's top. (L is the allocation pointer of LISP.)
 - The GC handler at the GC vector (0xF000_0010) in the boot program.
-- Timing after the LISP opcodes: not routed again yet. Their size, by yosys 0.33
-  (synth_gowin, no wide LUTs), before / after: execute 2,593 / 2,669 LUTs, 537 / 571
-  flip-flops (HLIM); decode 1,841 / 1,898 LUTs. New in the critical part of execute:
+- 63 MHz: see Timing (a pre-decode in fetch, a registered `mem_stall`).
+- `display2`: at 42 and 54 MHz (`make test-clocks`) the video test bench reports 78
+  wrong pixels in scrolled.bmp (at 100 MHz none): that picture reads 5 lines past the
+  demo pixels, which the processor's random traffic has not written into the SDRAM
+  at the slower clocks. The test bench's model, not the video unit; to be fixed there.
+- The size of the LISP opcodes, by yosys 0.71
+  (synth_gowin, no wide LUTs): execute 2,862 LUTs, 284 ALU, 571 flip-flops (32 of them
+  HLIM), 1 MULT36X36; decode 1,896 LUTs, 72 ALU, 130 flip-flops, 32 RAM16SDP4. (By
+  yosys 0.33 the LISP opcodes added about 76 LUTs to execute and 57 to decode.) New
+  in the critical part of execute:
   the trap (the ALU's borrow) on `redirect`, on the `stackregs` enable and on
-  `x_store` / `x_wen`; check the routed frequency (`--freq 63`) with nextpnr.
+  `x_store` / `x_wen`; check the routed frequency with `make timing` in `timing`
+  (`timing/core.v`: the five stages with two 8 KB block RAMs, as measured above;
+  `make test` there runs it first in simulation).
 - The I/O devices on the I/O range (keyboard, mouse, video registers, ...), and an
   I/O decoder behind `io_*`.
 - The boot program for the block RAM (a `$readmemh` file for `BRAM_INIT`).

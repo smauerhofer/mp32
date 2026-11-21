@@ -20,16 +20,18 @@
 // ends the access. Stage 4: d_*; fetch: line_*; the I/O devices: io_*. See membus.v.
 //
 // ---------------------------------------------------------------- the clock
-// clk is the processor's clock, CLK_MHZ MHz (for the SDRAM's timing and refresh).
-// Above about 60 MHz the SDRAM needs its own clock: EXT_CLK = 1 and clk_sdram from
-// a second output of the PLL, at the same frequency, shifted in phase; RD_LAT goes
-// with that phase (see sdram.v). Both must be found on the board.
+// clk is the processor's clock, CLK_MHZ MHz (for the SDRAM's timing and refresh): 42
+// MHz, 126 / 3 from the display's PLL. Up to about 60 MHz the inverted clock is
+// enough for the SDRAM (EXT_CLK = 0, sdram.v). Above it, the SDRAM needs its own
+// clock: EXT_CLK = 1 and clk_sdram from a second output of the PLL, at the same
+// frequency, shifted in phase; RD_LAT goes with that phase. Both must be found on the
+// board.
 
 module memsys #(
-    parameter        CLK_MHZ    = 63,
+    parameter        CLK_MHZ    = 42,
     parameter        CAS        = 2,
     parameter        RD_LAT     = CAS + 1,
-    parameter        EXT_CLK    = 1,
+    parameter        EXT_CLK    = 0,
     parameter        INDEX_BITS = 9,                  // cache: 2^9 lines of 16 bytes
     parameter [22:0] WT_FROM    = 23'h780000,         // write-through (the video's)
     parameter [22:0] WT_TO      = 23'h7FFFFF,

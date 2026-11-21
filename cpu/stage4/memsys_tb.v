@@ -1,5 +1,5 @@
 // memsys_tb.v: tests memsys.v: the memory bus, the block RAM, the cache and the SDRAM
-// controller together, against the model of the SDRAM, at 63 MHz.
+// controller together, against the model of the SDRAM, at 42 MHz.
 //
 //   make test-memsys
 // or by hand:
@@ -19,12 +19,12 @@
 // model checks the SDRAM's timing and the refresh all along.
 //
 // The simulation uses EXT_CLK = 0 (the model cannot tell a good SDRAM clock phase from
-// a bad one; on the board, at 63 MHz, see memsys.v).
+// a bad one; at 42 MHz the board uses EXT_CLK = 0 too, see memsys.v).
 
 `timescale 1ns/1ps
 
 module memsys_tb;
-    parameter CLK_MHZ = 63;
+    parameter CLK_MHZ = 42;
     parameter OPS     = 6000;            // stage 4's accesses
 
     reg clk = 0;

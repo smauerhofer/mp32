@@ -36,7 +36,7 @@ module alu_tb;
     wire [31:0] y, y2;
     wire [3:0]  fl;
 
-    alu dut (.op(op), .a(a), .b(b), .cin(cin), .y(y), .y2(y2), .flags(fl));
+    alu dut (.op(op), .a(a), .b(b), .bo(b), .cin(cin), .y(y), .y2(y2), .flags(fl));
 
     integer errors = 0, checks = 0, seed = 21, i, j, k, o;
 
@@ -155,6 +155,22 @@ module alu_tb;
             rz = wide ? ({ry2, ry} == 0) : (ry == 0);
             rn = wide ? ry2[31] : ry[31];
             checks = checks + 1;
+            // the short result: y of the adder and logic ops, and the adder's flags
+            if (op == ADD || op == ADC || op == SUB || op == SBC || op == RSB || op == RSC ||
+                op == AND || op == OR || op == XOR) begin
+                checks = checks + 1;
+                if (dut.ya !== y || dut.flags_s !== fl) begin
+                    errors = errors + 1;
+                    if (errors <= 20) $display("op %0d: ya=%h flags_s=%b, y=%h flags=%b", op, dut.ya, dut.flags_s, y, fl);
+                end
+            end
+            if (op == ADD || op == ADC || op == SUB || op == SBC || op == RSB || op == RSC) begin
+                checks = checks + 1;
+                if (dut.flags_a !== fl) begin
+                    errors = errors + 1;
+                    if (errors <= 20) $display("op %0d: flags_a=%b, flags=%b", op, dut.flags_a, fl);
+                end
+            end
             if (y !== ry || y2 !== ry2 || fl !== {rv, rn, rz, rc}) begin
                 errors = errors + 1;
                 if (errors <= 20)

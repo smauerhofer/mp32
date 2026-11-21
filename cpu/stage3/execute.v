@@ -23,10 +23,11 @@
 //   d_a_tmpl    ALU input a = TMPL (else operand A)
 //   d_b_s3      ALU input b = the stage 3 value (else operand B)
 //   d_b_imm, d_imm  ALU input b = d_imm, a constant from decode (else operand B): so
-//               both operands stay free, e.g. STR3's base and data (d_b_s3 wins)
+//               both operands stay free, e.g. STR3's base and data. d_imm comes in as
+//               s3 = 0 (decode leaves d_s3 at 0 with d_b_imm), so b has one mux: s3 or B
 //
 //   the stage 3 value (s3) and the result (r)
-//   d_s3        s3 = 0: `stackregs` value (the register d_sp_sel), 1: TMPL, 2: TMPH,
+//   d_s3        s3 = 0: d_imm, 1: TMPL, 2: TMPH,
 //               3: ST = {28'h0, the flags V N Z C}, 4: PSP, 5: RSP, 6: FP (read
 //               from `stackregs`' own outputs, not through sel: so an instruction can
 //               read one of them and write another, e.g. MOV2 FP, PSP), 7: HLIM
@@ -64,6 +65,18 @@
 //                       jumps to GC_VECTOR and its store, its register write and its
 //                       `stackregs` op (push R, R = d_imm) take effect. When it does not
 //                       borrow, none of them does: the step is a bubble.
+//
+// ---------------------------------------------------------------- the short result
+// The registers of stage 3 (PSP, RSP, FP, TMPL, TMPH, ST, HLIM), the jumps through the
+// ALU and the ALU addresses only ever take operand A, the adder's or a logic op's y,
+// or the adder's flags (CMP3): rs, from the ALU's ya and flags_a. The shifter, divider
+// and multipliers are behind y only, which goes on to x_result. So no path goes from
+// a register of stage 3 through the divider back into one (timing).
+//
+// The adder and logic ops (ADD .. XOR, RSB, RSC: e_short) take their result r, their
+// second write and their flags from ya and flags_s too, not from the ALU's y and
+// flags, behind which are all the other ops: the longest path, from a register of
+// stage 3 through b and the adder into x_result, is shorter so.
 //
 // ---------------------------------------------------------------- timing
 // go = the instruction in execute takes effect at this edge: it is valid, stage 4
@@ -182,6 +195,8 @@ module execute #(
     reg        e_tmp_we, e_tmp_src, e_tl_we, e_th_we, e_th_y2, e_tl_shl, e_tl_shr, e_st_we;
     reg        e_jump, e_tgt;                  reg [3:0] e_cond;
     reg        e_trap, e_hl_we;
+    reg        e_bsel;                 // ALU input b = s3 (a register of stage 3, or d_imm)
+    reg        e_short;                // an adder or logic op: its results from ya, flags_s
 
     // ================================================================ the operands
     wire        e_valid, load_use;
@@ -214,6 +229,8 @@ module execute #(
             e_tl_shl <= d_tl_shl;  e_tl_shr <= d_tl_shr;  e_st_we <= d_st_we;
             e_jump <= d_jump;      e_cond <= d_cond;      e_tgt <= d_tgt;
             e_trap <= d_trap;      e_hl_we <= d_hl_we;
+            e_bsel <= d_b_s3 | d_b_imm;
+            e_short <= (d_alu_op <= 5'd6) | (d_alu_op == 5'd26) | (d_alu_op == 5'd27);
         end
 
     // the instruction in execute takes effect at this edge
@@ -232,9 +249,13 @@ module execute #(
     wire [31:0] y, y2;
     wire [3:0]  alu_flags;
 
+    wire [31:0] ya;
+    wire [3:0]  flags_a, flags_s;
+    reg  [31:0] rs;                     // the short result, for the registers of stage 3
+
     stackregs stack (
         .clk(clk), .en(go & act), .sel(e_sp_sel), .op(e_sp_op),
-        .offset(e_b), .w_data(r),
+        .offset(e_b), .w_data(rs),
         .value(sp_value), .addr(sp_addr), .psp(psp), .rsp(rsp), .fp(fp)
     );
 
@@ -244,7 +265,7 @@ module execute #(
 
     tmplh tlh (
         .clk(clk), .reset(reset), .en(go),
-        .we_l(e_tl_we), .d_l(r), .we_h(e_th_we), .d_h(e_th_y2 ? y2 : r),
+        .we_l(e_tl_we), .d_l(rs), .we_h(e_th_we), .d_h(e_th_y2 ? y2 : rs),
         .sh_l(e_tl_shl), .sh_r(e_tl_shr), .sh_bit(y2[0]),
         .tmpl(tmpl), .tmph(tmph)
     );
@@ -252,7 +273,8 @@ module execute #(
     // the flags: from the ALU (mask e_fmask), or all four from r when ST is written
     flags flg (
         .clk(clk), .reset(reset), .en(go),
-        .mask(e_st_we ? 4'hF : e_fmask), .alu_flags(e_st_we ? r[3:0] : alu_flags), .f(f)
+        .mask(e_st_we ? 4'hF : e_fmask),
+        .alu_flags(e_st_we ? rs[3:0] : e_short ? flags_s : alu_flags), .f(f)
     );
     assign flags_out = f;
 
@@ -260,7 +282,7 @@ module execute #(
     reg [31:0] hlim_r;
     always @(posedge clk)
         if (reset)                  hlim_r <= 32'h0;
-        else if (go & e_hl_we)      hlim_r <= r;
+        else if (go & e_hl_we)      hlim_r <= rs;
     assign hlim = hlim_r;
 
     // ================================================================ the ALU
@@ -274,7 +296,7 @@ module execute #(
             3'd5:    s3 = rsp;
             3'd6:    s3 = fp;
             3'd7:    s3 = hlim_r;
-            default: s3 = sp_value;                    // the register sel names
+            default: s3 = e_imm;                       // d_imm
         endcase
 
     reg cin;
@@ -287,26 +309,34 @@ module execute #(
         endcase
 
     alu alu (
-        .op(e_alu_op), .a(e_a_tmpl ? tmpl : e_a), .b(e_b_s3 ? s3 : e_b_imm ? e_imm : e_b), .cin(cin),
-        .y(y), .y2(y2), .flags(alu_flags)
+        .op(e_alu_op), .a(e_a_tmpl ? tmpl : e_a), .b(e_bsel ? s3 : e_b),
+        .bo(e_b), .cin(cin),
+        .y(y), .y2(y2), .flags(alu_flags), .ya(ya), .flags_a(flags_a), .flags_s(flags_s)
     );
 
     always @*
         case (e_res)
-            3'd0: r = y;
+            3'd0: r = e_short ? ya : y;
             3'd1: r = e_a;
             3'd2: r = e_b;
             3'd3: r = s3;
             3'd4: r = tmp;
-            3'd6: r = {28'h0, alu_flags};               // CMP3
+            3'd6: r = {28'h0, flags_a};                 // CMP3 (a SUB)
             3'd7: r = e_imm;                            // CONS's trap: the return address
             default: r = {y[31:1], y[0] | tmpl[31]};   // DIVS
+        endcase
+
+    always @*
+        case (e_res)
+            3'd1:    rs = e_a;
+            3'd6:    rs = {28'h0, flags_a};             // CMP3 into ST, PSP, ...
+            default: rs = ya;
         endcase
 
     reg [31:0] r2;                      // the second write's value
     always @*
         case (e_x2)
-            2'd0: r2 = y;
+            2'd0: r2 = e_short ? ya : y;
             2'd1: r2 = y2;
             2'd2: r2 = e_a;
             default: r2 = e_b;
@@ -316,9 +346,9 @@ module execute #(
     wire take;
     cond cnd (.cond(e_cond), .f(f), .tz(e_b == 32'h0), .take(take));
 
-    assign trap        = e_trap & !alu_flags[0];
+    assign trap        = e_trap & !flags_a[0];
     assign redirect    = go & (e_jump & take | trap);
-    assign redirect_pc = e_trap ? GC_VECTOR : e_tgt ? y : e_a;
+    assign redirect_pc = e_trap ? GC_VECTOR : e_tgt ? ya : e_a;
 
     // ================================================================ to stage 4
     always @(posedge clk)
@@ -330,7 +360,7 @@ module execute #(
             x_store  <= e_store & act;
             x_size   <= e_size;
             x_signed <= e_signed;
-            x_addr   <= e_addr ? y : sp_addr;
+            x_addr   <= e_addr ? ya : sp_addr;
             x_wdata  <= e_wdata ? e_b : e_a;
             x_wen    <= e_wen & act;
             x_rd     <= e_rd;

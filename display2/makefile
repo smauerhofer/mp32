@@ -2,7 +2,7 @@
 # of it.
 #   make test          run the test bench, at 100 MHz (writes mixed.bmp, text.bmp,
 #                      graphics.bmp, shape.bmp and scrolled.bmp into build/)
-#   make test-clocks   run it at 54 and 100 MHz
+#   make test-clocks   run it at 42 (the processor's clock), 54 and 100 MHz
 #   make size          synthesize the video unit alone and count what it takes
 #   make data          make palette.hex, fonts.hex, text.hex, pixels.hex and
 #                      modes.hex again
@@ -32,7 +32,7 @@ $(BUILD)/video_tb.vvp: video_tb.v $(BLOCKS) $(MODELS)
 test-video: $(BUILD)/video_tb.vvp $(DATA)
 	cd $(BUILD) && vvp video_tb.vvp
 
-CLOCKS = 54 100
+CLOCKS = 42 54 100
 
 $(BUILD)/video_tb_%mhz.vvp: video_tb.v $(BLOCKS) $(MODELS)
 	mkdir -p $(BUILD)

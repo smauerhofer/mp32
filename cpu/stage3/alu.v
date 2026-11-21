@@ -13,6 +13,19 @@
 //                         overflows; LSL: a << n overflows (signed), i.e. the top
 //                         n + 1 bits of a are not all equal; all other ops: 0
 //
+// ---------------------------------------------------------------- two b inputs, two results
+// b feeds the adder (ADD .. SBC, RSB, RSC, CSUB, TADD, TSUB), the logic ops (AND, OR,
+// XOR) and the 64-bit shifts: it can be a register of stage 3 (execute's s3). bo is
+// the plain operand B: it feeds the shifter (the amount), the divider, the multiply
+// step, the multiplier and TTAG, which never take a register of stage 3. So the long
+// path from the registers of stage 3 does not go through them (timing).
+//
+// ya is y for the adder and the logic ops only (for others: the adder's sum), and
+// flags_a the flags of the adder alone: what the writes of the registers of stage 3,
+// the jumps and the addresses need, without the long ops behind them. flags_s are the
+// flags of ya for all of those ops (the adder's, or for AND, OR, XOR: V = bit 30, C =
+// cin): for those ops they are the same as y and flags, a few levels of logic sooner.
+//
 // When an op does not set C (logic ops, a shift by 0), C out is the carry in. So with
 // cin = the C flag, C stays as it is even if the op's flags mask updates it.
 //
@@ -105,10 +118,14 @@ module alu (
     input  wire [4:0]  op,
     input  wire [31:0] a,
     input  wire [31:0] b,
+    input  wire [31:0] bo,             // operand B: for the shifter, divider, multipliers, TTAG
     input  wire        cin,
     output reg  [31:0] y,
     output reg  [31:0] y2,
-    output wire [3:0]  flags           // {V, N, Z, C}
+    output wire [3:0]  flags,          // {V, N, Z, C}
+    output reg  [31:0] ya,             // y of the adder and logic ops only
+    output wire [3:0]  flags_a,        // the flags of the adder: {V, N, Z, C}
+    output wire [3:0]  flags_s         // the flags of ya (adder and logic ops)
 );
     localparam [4:0] ADD = 5'd0,  ADC = 5'd1,  SUB = 5'd2,  SBC = 5'd3,
                      AND = 5'd4,  OR  = 5'd5,  XOR = 5'd6,  NOT = 5'd7,
@@ -130,15 +147,15 @@ module alu (
     wire        ovf   = (a_in[31] == b_in[31]) & (sum[31] != a_in[31]);
 
     // ---- the multiply step: add b if cin, then shift right (33 bits)
-    wire [32:0] mul_w = {1'b0, a} + (cin ? {1'b0, b} : 33'h0);
+    wire [32:0] mul_w = {1'b0, a} + (cin ? {1'b0, bo} : 33'h0);
 
     // ---- the multiplier: the on-chip one
     wire [63:0] prod;
-    mul multiplier (.a(a), .b(b), .sgn(op == SMUL), .p(prod));
+    mul multiplier (.a(a), .b(bo), .sgn(op == SMUL), .p(prod));
 
     // ---- the division step: 33 bits {cin, a} minus b if it fits, then shifted
     wire [32:0] div_r = {cin, a};
-    wire [33:0] div_d = {1'b0, div_r} - {2'b00, b};
+    wire [33:0] div_d = {1'b0, div_r} - {2'b00, bo};
     wire        div_q = !div_d[33];                           // no borrow: it fits
     wire [31:0] div_k = div_q ? div_d[31:0] : div_r[31:0];    // what is kept
 
@@ -151,7 +168,7 @@ module alu (
         for (i = 0; i < 32; i = i + 1) reverse[i] = x[31 - i];
     endfunction
 
-    wire [4:0]  n     = b[4:0];
+    wire [4:0]  n     = bo[4:0];
     wire        left  = (op == LSL) | (op == ROL);
     wire [31:0] src   = left ? reverse(a) : a;
     wire [31:0] fill  = (op == ASR) ? {32{a[31]}} :
@@ -191,7 +208,7 @@ module alu (
         MUL, SMUL: begin y = prod[31:0]; y2 = prod[63:32]; end
         ASL:   begin y = {a[31], a[29:0], 1'b0}; c = a[30]; v = a[31] ^ a[30]; end
         TADD, TSUB: begin y = sum[31:0]; c = sum[32]; v = ovf | (|{a[1:0], b[1:0]}); end
-        TTAG:  begin y = {24'h0, (a[7:0] ^ b[7:0]) & b[15:8]}; end
+        TTAG:  begin y = {24'h0, (a[7:0] ^ bo[7:0]) & bo[15:8]}; end
         default: begin y = sum[31:0]; c = sum[32]; v = ovf; end
         endcase
     end
@@ -201,4 +218,16 @@ module alu (
     wire neg  = wide ? y2[31] : y[31];
 
     assign flags = {v, neg, z, c};
+
+    // the short result: the adder and the logic ops
+    always @*
+        case (op)
+            AND:     ya = a & b;
+            OR:      ya = a | b;
+            XOR:     ya = a ^ b;
+            default: ya = sum[31:0];
+        endcase
+    assign flags_a = {ovf, sum[31], sum[31:0] == 32'h0, sum[32]};
+    wire   logic_op = (op == AND) | (op == OR) | (op == XOR);
+    assign flags_s = logic_op ? {ya[30], ya[31], ya == 32'h0, cin} : flags_a;
 endmodule

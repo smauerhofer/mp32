@@ -37,10 +37,11 @@
 //   Reading a block of 512 bytes is 128 times "write DATA32 0xFFFFFFFF, read DATA32".
 //
 // ---------------------------------------------------------------- the clock
-//   The card must be started at 100 to 400 kHz; afterwards up to 25 MHz. At 63 MHz:
-//     DIV = 78   399 kHz   (DIV_INIT, for the start)
-//     DIV = 1    15.75 MHz (the normal speed)
-//     DIV = 0    31.5 MHz  too fast for an SD card in default speed - don't.
+//   The card must be started at 100 to 400 kHz; afterwards up to 25 MHz. At 42 MHz
+//   SCLK is 42 MHz / (2 * (DIV + 1)):
+//     DIV = 52   396 kHz   (DIV_INIT, for the start)
+//     DIV = 0    21 MHz    (the normal speed)
+//     DIV = 1    10.5 MHz
 //
 // ---------------------------------------------------------------- the SPI mode
 //   Mode 0: SCLK rests at 0, MOSI changes after a falling edge, MISO is taken on the
@@ -54,7 +55,7 @@
 //   an access takes at least two ticks.
 
 module sdcard #(
-    parameter [7:0] DIV_INIT = 8'd78              // 399 kHz at 63 MHz
+    parameter [7:0] DIV_INIT = 8'd52              // 396 kHz at 42 MHz
 ) (
     input  wire        clk,
     input  wire        reset,          // synchronous, active high

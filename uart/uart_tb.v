@@ -1,4 +1,4 @@
-// uart_tb.v: tests uart.v (with uart_rx.v, uart_tx.v and fifo.v) at 63 MHz.
+// uart_tb.v: tests uart.v (with uart_rx.v, uart_tx.v and fifo.v) at 42 MHz.
 //
 //   make test-uart
 // or by hand:
@@ -18,7 +18,7 @@
 `timescale 1ns/1ps
 
 module uart_tb;
-    localparam real TICK = 15.873;        // 63 MHz
+    localparam real TICK = 23.810;        // 42 MHz
     reg clk = 0;
     always #(TICK / 2) clk = ~clk;
 
@@ -35,7 +35,7 @@ module uart_tb;
     wire uart_tx;
     wire uart_rx = loop ? uart_tx : pc_tx;
 
-    uart #(.DIV_INIT(16'd547), .RX_BITS(6), .TX_BITS(4)) dut (
+    uart #(.DIV_INIT(16'd365), .RX_BITS(6), .TX_BITS(4)) dut (
         .clk(clk), .reset(reset),
         .io_sel(io_sel), .io_we(io_we), .io_be(4'hF), .io_addr(io_addr),
         .io_wdata(io_wdata), .io_rdata(io_rdata), .io_ready(io_ready),
@@ -54,7 +54,7 @@ module uart_tb;
 
     // ================================================================ the PC: receiving
     // Every byte that comes on uart_tx, in got[]. mon_bit is the bit time it expects.
-    real       mon_bit = 547 * TICK;
+    real       mon_bit = 365 * TICK;
     reg  [7:0] got [0:65535];
     integer    ngot = 0, mi;
     reg  [7:0] mb;
@@ -132,7 +132,7 @@ module uart_tb;
 
         // ---- after reset
         rd(STATUS); check(r, TXE, "STATUS after reset");
-        rd(DIV);    check(r, 547, "DIV after reset");
+        rd(DIV);    check(r, 365, "DIV after reset");
         rd(CTRL);   check(r, 0,   "CTRL after reset");
         rd(DATA);   check(r, 0,   "DATA, nothing received");
         check(irq, 0, "irq after reset");
@@ -142,9 +142,9 @@ module uart_tb;
         wr(DATA, 32'h55);
         @(negedge uart_tx); t0 = $realtime;
         @(posedge uart_tx); t1 = $realtime;
-        if (t1 - t0 < 547 * TICK - 1 || t1 - t0 > 547 * TICK + 1) begin
+        if (t1 - t0 < 365 * TICK - 1 || t1 - t0 > 365 * TICK + 1) begin
             errors = errors + 1;
-            $display("bit time %0.1f ns, expected %0.1f", t1 - t0, 547 * TICK);
+            $display("bit time %0.1f ns, expected %0.1f", t1 - t0, 365 * TICK);
         end
         rd(STATUS); check(r & TXE, 0, "TXE while sending");
         wait_txe;
@@ -163,7 +163,7 @@ module uart_tb;
             check(got[start_got + i], 8'h30 + i, "byte of the 40");
 
         // ---- one byte in
-        pc_send(8'hA5, 547 * TICK, 1);
+        pc_send(8'hA5, 365 * TICK, 1);
         repeat (10) @(posedge clk);
         rd(STATUS); check(r, {16'd1, 8'd0} | RXA | TXE, "STATUS with a byte received");
         rd(DATA);   check(r, 32'h1A5, "DATA: the byte");
@@ -171,7 +171,7 @@ module uart_tb;
         rd(STATUS); check(r, TXE,     "STATUS after reading it");
 
         // ---- 64 bytes fill the queue, two more are lost: OVR
-        for (i = 0; i < 66; i = i + 1) pc_send(i * 3, 547 * TICK, 1);
+        for (i = 0; i < 66; i = i + 1) pc_send(i * 3, 365 * TICK, 1);
         repeat (10) @(posedge clk);
         rd(STATUS); check(r, {16'd64, 8'd0} | RXA | TXE | OVR, "STATUS after 66 bytes");
         for (i = 0; i < 64; i = i + 1) begin
@@ -182,14 +182,14 @@ module uart_tb;
         rd(STATUS); check(r, TXE, "STATUS after clearing OVR");
 
         // ---- a byte without its stop bit: FERR, and nothing in the queue
-        pc_send(8'h77, 547 * TICK, 0);
+        pc_send(8'h77, 365 * TICK, 0);
         rd(STATUS); check(r, TXE | FERR, "STATUS after a byte without a stop bit");
         wr(STATUS, FERR);
         rd(STATUS); check(r, TXE, "STATUS after clearing FERR");
 
         // ---- a PC that is 3 % fast, then 3 % slow
         for (k = 0; k < 2; k = k + 1) begin
-            bit_ns = (k == 0 ? 0.97 : 1.03) * 547 * TICK;
+            bit_ns = (k == 0 ? 0.97 : 1.03) * 365 * TICK;
             for (i = 0; i < 10; i = i + 1) pc_send(8'hC0 + i + 16 * k, bit_ns, 1);
             repeat (10) @(posedge clk);
             for (i = 0; i < 10; i = i + 1) begin
@@ -201,7 +201,7 @@ module uart_tb;
         // ---- RXIE: irq while a byte waits
         wr(CTRL, 1);
         check(irq, 0, "irq, RXIE, nothing received");
-        pc_send(8'h11, 547 * TICK, 1);
+        pc_send(8'h11, 365 * TICK, 1);
         repeat (10) @(posedge clk);
         check(irq, 1, "irq, RXIE, a byte received");
         rd(DATA);
@@ -228,16 +228,16 @@ module uart_tb;
             if (n % 40 == 0) begin
                 // a new speed, while nothing is under way
                 case ((n / 40) % 5)
-                    0: d = 63;            // 1,000,000 baud
-                    1: d = 16;            // 3,937,500 baud
+                    0: d = 42;            // 1,000,000 baud
+                    1: d = 16;            // 2,625,000 baud
                     2: d = 34;
-                    3: d = 68;            // 921,600 baud
-                    4: d = 547;           // 115,200 baud
+                    3: d = 46;            // 921,600 baud (0.9 % slow)
+                    4: d = 365;           // 115,200 baud
                 endcase
                 wr(DIV, d);
                 mon_bit = d * TICK;
             end
-            chunk = 1 + ($unsigned($random(seed)) % (d == 547 ? 4 : 24));
+            chunk = 1 + ($unsigned($random(seed)) % (d == 365 ? 4 : 24));
             for (i = 0; i < chunk; i = i + 1) begin
                 sent[nsent] = $random(seed);
                 wr(DATA, sent[nsent]);

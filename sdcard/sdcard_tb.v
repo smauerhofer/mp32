@@ -19,7 +19,7 @@
 
 module sdcard_tb;
     reg clk = 0;
-    always #7.937 clk = ~clk;             // 63 MHz
+    always #11.905 clk = ~clk;            // 42 MHz
 
     reg         reset = 1;
     reg         io_sel = 0, io_we = 0;
@@ -31,7 +31,7 @@ module sdcard_tb;
     wire sd_clk, sd_mosi, sd_cs_n;
     wire sd_miso;
 
-    sdcard #(.DIV_INIT(8'd78)) dut (
+    sdcard #(.DIV_INIT(8'd52)) dut (
         .clk(clk), .reset(reset),
         .io_sel(io_sel), .io_we(io_we), .io_be(4'hF), .io_addr(io_addr),
         .io_wdata(io_wdata), .io_rdata(io_rdata), .io_ready(io_ready),
@@ -120,10 +120,10 @@ module sdcard_tb;
             wr(DATA, 8'h55);                 // returns with the transfer running
             @(posedge sd_clk); t0 = $realtime;
             @(posedge sd_clk); t1 = $realtime;
-            if ((t1 - t0) < 31.748 * (d + 1) - 1 || (t1 - t0) > 31.748 * (d + 1) + 1) begin
+            if ((t1 - t0) < 47.619 * (d + 1) - 1 || (t1 - t0) > 47.619 * (d + 1) + 1) begin
                 errors = errors + 1;
                 $display("DIV %0d: SCLK period %0.1f ns, expected %0.1f",
-                         d, t1 - t0, 31.748 * (d + 1));
+                         d, t1 - t0, 47.619 * (d + 1));
             end
             rd(DATA);                        // waits for the end
         end
@@ -169,12 +169,12 @@ module sdcard_tb;
         @(posedge clk); #1;
 
         // ---- after reset
-        rd(CTRL);   check(r, {15'd0, 1'b0, 8'd78, 7'd0, 1'b0}, "CTRL after reset");
+        rd(CTRL);   check(r, {15'd0, 1'b0, 8'd52, 7'd0, 1'b0}, "CTRL after reset");
         check(sd_cs_n, 1, "CS after reset");
         check(sd_clk, 0, "SCLK after reset");
         check(sd_mosi, 1, "MOSI idle");
 
-        // ---- the card's start: 80 clocks with CS off, at 399 kHz
+        // ---- the card's start: 80 clocks with CS off, at 396 kHz
         rises = 0;
         for (i = 0; i < 10; i = i + 1) wr(DATA, 8'hFF);
         rd(DATA);
@@ -207,7 +207,7 @@ module sdcard_tb;
             period(i);
             sent[nsent] = 8'h55; nsent = nsent + 1; prev = 8'h55;
         end
-        period(78);
+        period(52);
         sent[nsent] = 8'h55; nsent = nsent + 1; prev = 8'h55;
 
         // ---- random transfers, random speeds, now and then CS off and on again

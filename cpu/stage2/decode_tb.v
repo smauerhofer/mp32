@@ -203,9 +203,15 @@ module decode_tb;
 
     reg  [4:0]  ra_op;   reg [31:0] ra_a, ra_b;   reg ra_cin;
     wire [31:0] ra_y, ra_y2;   wire [3:0] ra_f;
-    alu ref_alu (.op(ra_op), .a(ra_a), .b(ra_b), .cin(ra_cin), .y(ra_y), .y2(ra_y2), .flags(ra_f));
+    alu ref_alu (.op(ra_op), .a(ra_a), .b(ra_b), .bo(ra_b), .cin(ra_cin), .y(ra_y), .y2(ra_y2), .flags(ra_f));
     reg  [3:0]  rc_cond; reg rc_tz;  wire rc_take;
     cond ref_cond (.cond(rc_cond), .f(r_fl), .tz(rc_tz), .take(rc_take));
+
+    // the reference's own state, declared before the tasks that use it
+    reg [31:0] cur_pc, last_jump;         // traps (below): the instruction now, the last jump taken
+    reg [7:0]  hits [0:65535];
+    reg        trapped;
+    integer    n_cons, n_gc;              // CONS allocated, CONS trapped (in the reference)
 
     // what it does, in order
     parameter MAXW = 3 * NREF;
@@ -295,9 +301,6 @@ module decode_tb;
     // NOP, and the reference runs again from the start. The pipeline runs the code as
     // it is in the end.
     parameter TRAP = 40;
-    reg [31:0] cur_pc, last_jump;
-    reg [7:0]  hits [0:65535];
-    reg        trapped;
 
     // the stage 3 registers and PC, as decode numbers them: 0 PSP 1 RSP 2 FP 4 TMPL 5 TMPH
     // 6 ST (the flags in bits 3..0; a write sets them, after what the ALU set) 7 HLIM
@@ -806,7 +809,6 @@ module decode_tb;
     end
 
     integer k, n_kinds, n_traps;
-    integer n_cons, n_gc;                 // CONS allocated, CONS trapped (in the reference)
     initial begin
         // the data memory starts with random words (the same in both), so loads see
         // negative bytes and halfwords too

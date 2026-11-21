@@ -35,7 +35,7 @@ module tmplh_tb;
     reg  [31:0] t_reg = 0, s_reg = 0;     // T and S, for DIVS
     wire [31:0] y, y2;
     wire [3:0]  fl;
-    alu alu (.op(op), .a(divide | multiply ? t_reg : tmpl), .b(divide | multiply ? s_reg : tmph),
+    alu alu (.op(op), .a(divide | multiply ? t_reg : tmpl), .b(divide | multiply ? s_reg : tmph), .bo(divide | multiply ? s_reg : tmph),
              .cin(multiply ? tmpl[0] : c), .y(y), .y2(y2), .flags(fl));
 
     tmplh dut (

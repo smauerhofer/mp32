@@ -1,7 +1,7 @@
 // video_tb.v: tests video.v together with the cache and the SDRAM it reads from.
 //
 //   make test                  (see the makefile; at 100 MHz)
-//   make test-clocks           at 54 and 100 MHz
+//   make test-clocks           at 42, 54 and 100 MHz
 //
 // The circuit: the video unit, the cache (../cache/cache.v) with its SDRAM controller
 // (../cache/sdram.v), and the model of the SDRAM (../cache/sdram_model.v), which

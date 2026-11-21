@@ -1,17 +1,23 @@
-# Stage 4 of the mp32 processor: memory access.
-#   make test           run the test benches
-#   make test-memaccess run one of them: memaccess or membus
-#   make clean          throw away what the build made
+# Stage 4 of the mp32 processor: memory access, and the memory system it reaches.
+#   make test             run the test benches
+#   make test-memsys      run one of them: memaccess, membus or memsys (the memory
+#                         system with the real cache and SDRAM controller, at 42 MHz)
+#   make size             what the bus and its block RAM take on the chip
+#   make clean            throw away what the build made
 BUILD ?= build
 
 # The building blocks of this stage. Test benches pick what they need.
 # wildcard keeps only the files that are already there, so you can build as you go.
-BLOCKS = $(wildcard memaccess.v membus.v bram.v)
+BLOCKS = $(wildcard memaccess.v membus.v bram.v memsys.v)
 
-test: test-memaccess test-membus
+# The memory system uses the cache and the SDRAM controller; its test the SDRAM model.
+CACHE  = ../../cache
+OTHERS = $(CACHE)/cache.v $(CACHE)/sdram.v $(CACHE)/sdram_model.v
+
+test: test-memaccess test-membus test-memsys
 
 # Simulation: iverilog compiles a test bench, vvp runs it.
-$(BUILD)/%_tb.vvp: %_tb.v $(BLOCKS)
+$(BUILD)/%_tb.vvp: %_tb.v $(BLOCKS) $(OTHERS)
 	mkdir -p $(BUILD)
 	iverilog -g2005 -s $*_tb -o $@ $^
 

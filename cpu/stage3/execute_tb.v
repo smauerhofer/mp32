@@ -105,7 +105,7 @@ module execute_tb;
     // the stage 3 register of a MOVR / ADDR (0 PSP 1 RSP 2 FP 3 TMPL 4 TMPH)
     task s3_read(input [2:0] w);
         begin
-            if (w < 3) begin d_s3 = 0; d_sp_sel = w; d_sp_op = SP_BASE; end
+            if (w < 3) begin d_s3 = 3'd4 + w; d_sp_sel = w; d_sp_op = SP_BASE; end
             else       d_s3 = (w == 3) ? 2'd1 : 2'd2;
         end
     endtask
@@ -318,7 +318,7 @@ module execute_tb;
     // its ALU and conditions: separate instances, tested on their own
     reg  [4:0]  ra_op;   reg [31:0] ra_a, ra_b;   reg ra_cin;
     wire [31:0] ra_y, ra_y2;   wire [3:0] ra_f;
-    alu ref_alu (.op(ra_op), .a(ra_a), .b(ra_b), .cin(ra_cin), .y(ra_y), .y2(ra_y2), .flags(ra_f));
+    alu ref_alu (.op(ra_op), .a(ra_a), .b(ra_b), .bo(ra_b), .cin(ra_cin), .y(ra_y), .y2(ra_y2), .flags(ra_f));
     reg  [3:0]  rc_cond; reg rc_tz;  wire rc_take;
     cond ref_cond (.cond(rc_cond), .f(r_fl), .tz(rc_tz), .take(rc_take));
 

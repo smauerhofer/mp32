@@ -1,5 +1,5 @@
 # The serial port of the mp32 computer: test it, and try it on the board.
-#   make test          run the two test benches (uart at 63 MHz, echo at 27 MHz)
+#   make test          run the two test benches (uart at 42 MHz, echo at 27 MHz)
 #   make test-uart     run one of them: uart, echo
 #   make size          synthesize the port alone and count what it takes
 #   make echo          build echo.v for the board: the port alone, echoing what you type

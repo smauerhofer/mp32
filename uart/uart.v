@@ -10,7 +10,7 @@
 //   See uart.cst. A USB serial adapter at 3.3 V on two other pins works the same.
 //
 //   The bytes go 8N1: a start bit, eight bits, no parity, one stop bit. The speed
-//   is set by DIV, the ticks of one bit: from reset DIV_INIT, 115,200 baud at 63 MHz.
+//   is set by DIV, the ticks of one bit: from reset DIV_INIT, 115,200 baud at 42 MHz.
 //
 // ---------------------------------------------------------------- the registers
 //   Four 32-bit registers, picked by io_addr[3:2] (the I/O decoder gives io_sel):
@@ -33,10 +33,10 @@
 //                         bits 23..16      how many the transmitter's queue holds
 //                  write: a 1 in bit 3 or 4 clears OVR or FERR
 //
-//     +8   DIV     bits 15..0: ticks of one bit, at least 16. At 63 MHz:
-//                         547  115,200 baud   (DIV_INIT)
-//                         68   921,600 baud
-//                         63   1,000,000 baud
+//     +8   DIV     bits 15..0: ticks of one bit, at least 16. At 42 MHz:
+//                         365  115,200 baud   (DIV_INIT; 0.1 % fast)
+//                         46   921,600 baud   (0.9 % slow)
+//                         42   1,000,000 baud
 //                  The receiver takes a new DIV at the next byte, the transmitter at
 //                  the next bit: change it when TXE is 1 and nothing comes.
 //
@@ -54,7 +54,7 @@
 //   io_ready is a register: an access takes at least two ticks.
 
 module uart #(
-    parameter [15:0] DIV_INIT = 16'd547,        // 115,200 baud at 63 MHz
+    parameter [15:0] DIV_INIT = 16'd365,        // 115,200 baud at 42 MHz
     parameter        RX_BITS  = 6,              // 64 bytes
     parameter        TX_BITS  = 4               // 16 bytes
 ) (
