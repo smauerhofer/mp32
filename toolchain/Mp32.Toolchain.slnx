@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path="Directory.Build.props" />
+    <File Path="README.md" />
+    <File Path="Makefile.txt" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Mp32.Core/Mp32.Core.csproj" />
+    <Project Path="src/Mp32.Assembler/Mp32.Assembler.csproj" />
+    <Project Path="src/Mp32.Librarian/Mp32.Librarian.csproj" />
+    <Project Path="src/Mp32.Linker/Mp32.Linker.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Mp32.Tests/Mp32.Tests.csproj" />
+  </Folder>
+</Solution>

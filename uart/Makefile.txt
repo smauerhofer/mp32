@@ -1,0 +1,58 @@
+# The serial port of the mp32 computer: test it, and try it on the board.
+#   make test          run the two test benches (uart at 63 MHz, echo at 27 MHz)
+#   make test-uart     run one of them: uart, echo
+#   make size          synthesize the port alone and count what it takes
+#   make echo          build echo.v for the board: the port alone, echoing what you type
+#   make flash-echo    send it to the board
+#   make clean         throw away what the build made
+#
+# In the computer, uart.v goes behind the I/O decoder, with the pins from uart.cst.
+
+BUILD  ?= build
+DEVICE  = GW2AR-LV18QN88C8/I7
+FAMILY  = GW2A-18C
+FREQ    = 27
+
+# The building blocks. Test benches pick what they need.
+BLOCKS = uart.v uart_rx.v uart_tx.v fifo.v
+
+test: test-uart test-echo
+
+# Simulation: iverilog compiles a test bench, vvp runs it.
+$(BUILD)/uart_tb.vvp: uart_tb.v $(BLOCKS)
+	mkdir -p $(BUILD)
+	iverilog -g2005 -s uart_tb -o $@ $^
+
+$(BUILD)/echo_tb.vvp: echo_tb.v echo.v $(BLOCKS)
+	mkdir -p $(BUILD)
+	iverilog -g2005 -s echo_tb -o $@ $^
+
+test-%: $(BUILD)/%_tb.vvp
+	cd $(BUILD) && vvp $*_tb.vvp
+
+# What the chip makes of it, as if its ports were pins.
+size: $(BLOCKS)
+	yosys -p "read_verilog $^; synth_gowin -top uart; stat"
+
+# The board: the same four tools as in the book.
+echo: $(BUILD)/echo.fs
+
+$(BUILD)/%.json: %.v $(BLOCKS)
+	mkdir -p $(BUILD)
+	yosys -q -p "read_verilog $^; synth_gowin -top top -json $@"
+
+$(BUILD)/%_pnr.json: $(BUILD)/%.json %.cst
+	nextpnr-himbaechel --json $< --write $@ --device $(DEVICE) \
+		--vopt family=$(FAMILY) --vopt cst=$*.cst --freq $(FREQ)
+
+$(BUILD)/%.fs: $(BUILD)/%_pnr.json
+	gowin_pack -d $(FAMILY) -o $@ $<
+
+flash-%: $(BUILD)/%.fs
+	openFPGALoader -b tangnano20k $<
+
+clean:
+	rm -rf $(BUILD)
+
+.PHONY: test size echo clean
+.PRECIOUS: $(BUILD)/%_tb.vvp $(BUILD)/%.json $(BUILD)/%_pnr.json

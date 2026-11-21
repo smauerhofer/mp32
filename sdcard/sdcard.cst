@@ -1,0 +1,19 @@
+// Tang Nano 20K: the microSD slot, on the underside of the board, in SPI mode.
+// Copy these lines into the board's .cst together with sdcard.v.
+//
+//   sd_clk   83   CLK
+//   sd_mosi  82   CMD    (MOSI)
+//   sd_miso  84   DAT0   (MISO)
+//   sd_cs_n  81   DAT3   (chip select)
+//
+// DAT1 (85) and DAT2 (80) are not used in SPI mode; they are left out, so the
+// tools leave those pins alone. MISO rests at 1 (PULL_MODE=UP) when no card is
+// in the slot, or while the card does not drive it.
+IO_LOC  "sd_clk" 83;
+IO_PORT "sd_clk" IO_TYPE=LVCMOS33;
+IO_LOC  "sd_mosi" 82;
+IO_PORT "sd_mosi" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "sd_miso" 84;
+IO_PORT "sd_miso" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "sd_cs_n" 81;
+IO_PORT "sd_cs_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;

@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Shared by the assembler, librarian and linker: the instruction set,
+       relocations, and the object and library file formats. -->
+  <PropertyGroup>
+    <RootNamespace>Mp32.Core</RootNamespace>
+  </PropertyGroup>
+</Project>

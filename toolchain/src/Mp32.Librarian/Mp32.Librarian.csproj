@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>mp32ar</AssemblyName>
+    <RootNamespace>Mp32.Librarian</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Mp32.Core\Mp32.Core.csproj" />
+  </ItemGroup>
+</Project>

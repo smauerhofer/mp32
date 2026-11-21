@@ -1,0 +1,12 @@
+// Tang Nano 20K: the serial port, to the BL616 by the USB-C socket, which is a USB
+// serial port for the PC. Copy these lines into the board's .cst together with uart.v.
+//
+//   uart_rx  70   from the BL616 (the PC sends)
+//   uart_tx  69   to the BL616   (the PC receives)
+//
+// The same two pins as chapter 19 of the book and Sipeed's own uart example. uart_rx
+// rests at 1 (PULL_MODE=UP) in case nothing drives it.
+IO_LOC  "uart_rx" 70;
+IO_PORT "uart_rx" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "uart_tx" 69;
+IO_PORT "uart_tx" IO_TYPE=LVCMOS33;

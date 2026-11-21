@@ -1,0 +1,14 @@
+# build output of the simulations and the FPGA tools
+build/
+*.vvp
+*.vcd
+*.fs
+*.json
+
+# the C# toolchain: what Visual Studio and dotnet build
+toolchain/bin/
+**/bin/
+**/obj/
+.vs/
+TestResults/
+*.user
