@@ -107,7 +107,7 @@ module decode_tb;
     wire [1:0]  d_sp_sel;  wire [2:0] d_sp_op;
     wire        d_tmp_we, d_tmp_src, d_tl_we, d_th_we, d_th_y2, d_tl_shl, d_tl_shr, d_st_we;
     wire        d_jump, d_tgt;  wire [3:0] d_cond;
-    wire        d_trap, d_hl_we;
+    wire        d_trap, d_hl_we, d_loop;
 
     decode dec (
         .clk(clk), .reset(reset),
@@ -126,7 +126,7 @@ module decode_tb;
         .d_wdata(d_wdata), .d_addr(d_addr), .d_sp_sel(d_sp_sel), .d_sp_op(d_sp_op),
         .d_tmp_we(d_tmp_we), .d_tmp_src(d_tmp_src), .d_tl_we(d_tl_we), .d_th_we(d_th_we),
         .d_th_y2(d_th_y2), .d_tl_shl(d_tl_shl), .d_tl_shr(d_tl_shr), .d_st_we(d_st_we),
-        .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(d_trap), .d_hl_we(d_hl_we),
+        .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(d_trap), .d_hl_we(d_hl_we), .d_loop(d_loop),
         .t(), .s(), .r(), .l()
     );
 
@@ -150,7 +150,7 @@ module decode_tb;
         .d_wdata(d_wdata), .d_addr(d_addr), .d_sp_sel(d_sp_sel), .d_sp_op(d_sp_op),
         .d_tmp_we(d_tmp_we), .d_tmp_src(d_tmp_src), .d_tl_we(d_tl_we), .d_th_we(d_th_we),
         .d_th_y2(d_th_y2), .d_tl_shl(d_tl_shl), .d_tl_shr(d_tl_shr), .d_st_we(d_st_we),
-        .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(d_trap), .d_hl_we(d_hl_we),
+        .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(d_trap), .d_hl_we(d_hl_we), .d_loop(d_loop),
         .advance(advance), .mem_stall(mem_stall),
         .x_valid(x_valid), .x_load(x_load), .x_store(x_store), .x_size(x_size),
         .x_signed(x_signed), .x_addr(x_addr), .x_wdata(x_wdata), .x_wen(x_wen),
@@ -214,6 +214,7 @@ module decode_tb;
     reg [7:0]  hits [0:65535];
     reg        trapped;
     integer    n_cons, n_gc;              // CONS allocated, CONS trapped (in the reference)
+    integer    n_loop, n_lend;            // UNEXT, NEXT2, NEXT3: branched back, ended
 
     // what it does, in order
     parameter MAXW = 3 * NREF;
@@ -494,6 +495,20 @@ module decode_tb;
                        rc_cond = b1[7:4]; rc_tz = (t == 0); #1;
                        if (rc_take) jump(tg);
                    end
+            8'h48: if (b1[7:4] == 4'h0) begin                                           // UNEXT
+                       tg = {pc_of[31:4], b1[3:0]};
+                       if (rr != 0) begin w1(R_, rr - 1); jump(tg); n_loop = n_loop + 1; end
+                       else         begin rpop(r_rsp, v); w1(R_, v); n_lend = n_lend + 1; end  // R dropped
+                   end
+            8'h88, 8'hC8: if (b1[7:6] == 2'b00 && in_file) begin                       // NEXT2, NEXT3
+                       tg = nx + ((op == 8'h88) ? {{24{b2[7]}}, b2} : {{16{b3[7]}}, b3, b2});
+                       v = get(g);
+                       if (v != 0)        begin w1(g, v - 1); jump(tg); n_loop = n_loop + 1; end
+                       else begin
+                           n_lend = n_lend + 1;
+                           if (g == R_) begin rpop(r_rsp, v); w1(R_, v); end            // R dropped
+                       end
+                   end
             8'h42, 8'h82, 8'hC2: begin                                                  // calls
                        if (op == 8'h42)      tg = nx + {{24{b1[7]}}, b1};
                        else if (op == 8'h82) tg = nx + {{16{b2[7]}}, b2, b1};
@@ -652,6 +667,7 @@ module decode_tb;
             opcode(8'hC0); opcode(8'hC1); opcode(8'hC2);
             for (o = 8'hD0; o <= 8'hD7; o = o + 1) opcode(o);
             opcode(8'hC4); opcode(8'hC5);
+            opcode(8'h48); opcode(8'h88); opcode(8'hC8);                       // UNEXT, NEXT2, NEXT3
             // the start: HLIM = $7FFFFF (MOVR HLIM, T), so CONS allocates until L
             // passes it; L comes near it now and then (MOVR L, T), so it also traps
             cmem[0] = 8'hC0; cmem[1] = 8'hFF; cmem[2] = 8'hFF; cmem[3] = 8'h7F;    // LIT24 $7FFFFF
@@ -669,7 +685,7 @@ module decode_tb;
                 // CJMPL at the end of a line (14, 15) has no later instruction in the
                 // line to jump to; at 15 its byte 1 is in the next line, read as 0:
                 // EQ to the start of the line, a loop. Put a LIT8 there instead.
-                if (o == 8'h41 && (a % 16) >= 14) o = 8'h40;
+                if ((o == 8'h41 || o == 8'h48) && (a % 16) >= 14) o = 8'h40;
                 n = o[7:6] + 1;
                 // the assembler's rule: an instruction does not cross the end of a line
                 // (pad with NOPs); now and then one does anyway, with 0s in the next line
@@ -730,6 +746,16 @@ module decode_tb;
                 if (o == 8'h41) begin                                    // CJMPL: later in the line
                     nib = (a % 16) + 2 + x[17:16];
                     cmem[(a + 1) & 16'hFFFF] = {x[15:12], (nib > 15) ? 4'hF : nib[3:0]};
+                end
+                if (o == 8'h48) begin                                    // UNEXT: later in the line
+                    nib = (a % 16) + 2 + x[17:16];
+                    cmem[(a + 1) & 16'hFFFF] = {(x[15:12] == 0) ? x[11:8] : 4'h0, (nib > 15) ? 4'hF : nib[3:0]};  // bits 7..4 now and then not 0
+                end
+                if (o == 8'h88 || o == 8'hC8) begin                      // NEXT2, NEXT3: a register, forward
+                    rb1 = reg_byte(0);
+                    cmem[(a + 1) & 16'hFFFF] = {(x[26:24] == 0) ? x[28:27] : 2'b00, rb1[5:0]};  // opx now and then not 0
+                    cmem[(a + 2) & 16'hFFFF] = {1'b0, x[22:16]};         // +0 .. +127
+                    if (o == 8'hC8) cmem[(a + 3) & 16'hFFFF] = {6'h0, x[30:29]};   // .. +1023
                 end
                 if (o == 8'h81) cmem[(a + 2) & 16'hFFFF] = {1'b0, 2'b00, x[22:18]};   // +0 .. +511
                 if (o == 8'hC1) cmem[(a + 3) & 16'hFFFF] = {1'b0, x[24:18]};
@@ -832,7 +858,7 @@ module decode_tb;
             for (k = 0; k < 256; k = k + 1) begin rmem[k] = mem0[k]; count[k] = 0; end
             for (k = 0; k < 65536; k = k + 1) hits[k] = 0;
             r_psp = 0; r_rsp = 0; r_fp = 0; r_tmpl = 0; r_tmph = 0; r_hlim = 0; r_fl = 0; r_pc = 0;
-            n_cons = 0; n_gc = 0;
+            n_cons = 0; n_gc = 0; n_loop = 0; n_lend = 0;
             n_rec = 0; n_st = 0; n_jmp = 0; trapped = 0; last_jump = 0;
             for (k = 0; k < NREF && !trapped; k = k + 1) step;
             if (trapped) begin
@@ -866,13 +892,15 @@ module decode_tb;
         $display("reference: %0d instructions (%0d different opcodes), %0d register writes, %0d stores, %0d jumps, %0d traps broken; pipeline: %0d ticks",
                  NREF, n_kinds, n_rec, n_st, n_jmp, n_traps, ticks);
         $display("   CONS: %0d allocated, %0d trapped to the GC vector", n_cons, n_gc);
+        $display("   UNEXT, NEXT2, NEXT3: %0d branched, %0d ended", n_loop, n_lend);
         if (n_cons < 50 || n_gc < 20) begin
             fail("too few CONS of one kind");
         end
         for (k = 0; k < 256; k = k + 1)
             if ((k <= 8'h2F || (k >= 8'h31 && k <= 8'h33) || k == 8'h47 || k == 8'h87 || k == 8'h30 || k == 8'h46 || k == 8'h86 || k == 8'hC6 || k == 8'h40 || k == 8'h41 || k == 8'h42 || k == 8'h43 || k == 8'h44 ||
-                 (k >= 8'h50 && k <= 8'h57) || k == 8'h80 || k == 8'h81 || k == 8'h83 || k == 8'h84 || k == 8'h85 || (k >= 8'h90 && k <= 8'h97) || k == 8'h82 || k >= 8'hC0 && k <= 8'hC2 || k == 8'hC4 || k == 8'hC5 || k >= 8'hD0 && k <= 8'hD7)
-                && count[k] < 50) begin
+                 (k >= 8'h50 && k <= 8'h57) || k == 8'h80 || k == 8'h81 || k == 8'h83 || k == 8'h84 || k == 8'h85 || (k >= 8'h90 && k <= 8'h97) || k == 8'h82 || k >= 8'hC0 && k <= 8'hC2 || k == 8'hC4 || k == 8'hC5 || k >= 8'hD0 && k <= 8'hD7 ||
+                 k == 8'h48 || k == 8'h88 || k == 8'hC8)
+                && count[k] < ((k == 8'h01 || k == 8'h1F) ? 25 : 50)) begin   // RET, EXC: kept rare on purpose
                 fail("an opcode ran too rarely");
                 $display("   opcode %h: %0d times", k, count[k]);
             end

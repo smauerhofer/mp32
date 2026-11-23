@@ -60,6 +60,11 @@
 //   jumps
 //   d_jump, d_cond      a jump if the condition holds (cond.v; TZ: operand B == 0)
 //   d_tgt               to 0: operand A, 1: ALU y
+//   d_loop              UNEXT, NEXT2, NEXT3: when operand B (the counter) is not 0,
+//                       a jump to d_imm, and the write (counter - 1) takes effect;
+//                       the load and the `stackregs` op do not. When it is 0: no
+//                       jump, and the write takes effect only with the load (R
+//                       popped); otherwise nothing changes
 //   d_trap              step 0 of CONS: the ALU works out HLIM - L. When it borrows
 //                       (C = 0: L > HLIM, the heap is full) the instruction traps: it
 //                       jumps to GC_VECTOR and its store, its register write and its
@@ -144,6 +149,7 @@ module execute #(
     input  wire        d_tgt,
     input  wire        d_trap,
     input  wire        d_hl_we,
+    input  wire        d_loop,
 
     output wire        advance,        // stage 3 takes decode's instruction at the edge
 
@@ -194,7 +200,7 @@ module execute #(
     reg [1:0]  e_sp_sel;   reg [2:0] e_sp_op;
     reg        e_tmp_we, e_tmp_src, e_tl_we, e_th_we, e_th_y2, e_tl_shl, e_tl_shr, e_st_we;
     reg        e_jump, e_tgt;                  reg [3:0] e_cond;
-    reg        e_trap, e_hl_we;
+    reg        e_trap, e_hl_we, e_loop;
     reg        e_bsel;                 // ALU input b = s3 (a register of stage 3, or d_imm)
     reg        e_short;                // an adder or logic op: its results from ya, flags_s
     reg [7:0]  e_s3h;                  // d_s3 one-hot: bit k = s3 is source k (timing)
@@ -229,7 +235,7 @@ module execute #(
             e_tl_we <= d_tl_we;    e_th_we <= d_th_we;    e_th_y2 <= d_th_y2;
             e_tl_shl <= d_tl_shl;  e_tl_shr <= d_tl_shr;  e_st_we <= d_st_we;
             e_jump <= d_jump;      e_cond <= d_cond;      e_tgt <= d_tgt;
-            e_trap <= d_trap;      e_hl_we <= d_hl_we;
+            e_trap <= d_trap;      e_hl_we <= d_hl_we;    e_loop <= d_loop;
             e_bsel <= d_b_s3 | d_b_imm;
             e_s3h  <= 8'b1 << d_s3;
             e_short <= (d_alu_op <= 5'd6) | (d_alu_op == 5'd26) | (d_alu_op == 5'd27);
@@ -242,6 +248,12 @@ module execute #(
     // borrow of HLIM - L (wired below)
     wire trap;
     wire act = !e_trap | trap;          // the store, the write, the stack op take effect
+
+    // UNEXT, NEXT2, NEXT3: the counter (operand B) is not 0: branch, write counter - 1,
+    // and no load or stack op (they pop R when the loop ends). When it is 0: no
+    // branch, and only the load into R (a pop) is written; another register stays 0.
+    wire tz = (e_b == 32'h0);
+    wire ltake = e_loop & !tz;
 
     // ================================================================ the registers of stage 3
     wire [31:0] sp_value, sp_addr;
@@ -256,7 +268,7 @@ module execute #(
     reg  [31:0] rs;                     // the short result, for the registers of stage 3
 
     stackregs stack (
-        .clk(clk), .en(go & act), .sel(e_sp_sel), .op(e_sp_op),
+        .clk(clk), .en(go & act & !ltake), .sel(e_sp_sel), .op(e_sp_op),
         .offset(e_b), .w_data(rs),
         .value(sp_value), .addr(sp_addr), .psp(psp), .rsp(rsp), .fp(fp)
     );
@@ -344,11 +356,11 @@ module execute #(
 
     // ================================================================ jumps
     wire take;
-    cond cnd (.cond(e_cond), .f(f), .tz(e_b == 32'h0), .take(take));
+    cond cnd (.cond(e_cond), .f(f), .tz(tz), .take(take));
 
     assign trap        = e_trap & !flags_a[0];
-    assign redirect    = go & (e_jump & take | trap);
-    assign redirect_pc = e_trap ? GC_VECTOR : e_tgt ? ya : e_a;
+    assign redirect    = go & (e_jump & take | trap | ltake);
+    assign redirect_pc = e_trap ? GC_VECTOR : e_loop ? e_imm : e_tgt ? ya : e_a;
 
     // ================================================================ to stage 4
     always @(posedge clk)
@@ -356,13 +368,13 @@ module execute #(
             x_valid <= 1'b0;
         else if (!mem_stall) begin
             x_valid  <= e_valid & !load_use;
-            x_load   <= e_load;
+            x_load   <= e_load & !ltake;
             x_store  <= e_store & act;
             x_size   <= e_size;
             x_signed <= e_signed;
             x_addr   <= e_addr ? ya : sp_addr;
             x_wdata  <= e_wdata ? e_b : e_a;
-            x_wen    <= e_wen & act;
+            x_wen    <= e_wen & act & (!e_loop | ltake | e_load);
             x_rd     <= e_rd;
             x_result <= r;
             x2_wen   <= e_x2_wen;

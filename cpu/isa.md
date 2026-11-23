@@ -139,6 +139,7 @@ CMP3 at most one operand (source) of PSP, RSP, FP, TMPL, TMPH, ST, HLIM.
 | 0x44   | 2      | DECWR    | byte 1 = 11 reg: reg = reg - 4; flags C Z N V (6502) |
 | 0x46   | 2      | ENTER    | push FP onto the return stack (push R, R = FP), FP = RSP, RSP = RSP - 4n (n words: byte 1, unsigned) |
 | 0x47   | 2      | LSLI .. RORI | SHI: T shifted / rotated by a constant 0 .. 31 (byte 1: op in bits 7..5, count in 4..0); flags C Z N V |
+| 0x48   | 2      | UNEXT    | if R != 0: R = R - 1 and jump within the line (PC[3:0] = byte 1 bits 3..0); else drop R (pop the return stack into R); no flags |
 | 0x50   | 2      | ADDR     | add T to a register, or a register to T (the register named as in MOVR); flags C Z N V |
 | 0x51   | 2      | ADCR     | as ADDR, with the carry: + C; flags C Z N V |
 | 0x52   | 2      | SUBR     | T = T - register, or register = register - T (as ADDR); flags C Z N V (6502) |
@@ -156,6 +157,7 @@ CMP3 at most one operand (source) of PSP, RSP, FP, TMPL, TMPH, ST, HLIM.
 | 0x83   | 3      | MOVI2    | byte 1 bit 7 = 1: dst = a signed 8-bit constant (byte 2); no flags |
 | 0x86   | 3      | ENTER2   | ENTER with a 16-bit unsigned n words (bytes 1, 2) |
 | 0x87   | 3      | TTAG     | Z = ((T & mask) == value), mask byte 1, value byte 2 (the low 8 bits of T); only Z changes |
+| 0x88   | 3      | NEXT2    | if reg != 0 (byte 1): reg = reg - 1 and jump to the next instruction + an 8-bit signed offset (byte 2); else for R drop R; no flags |
 | 0x90   | 3      | ADD2     | dst = dst + src: any two registers (byte 1 the destination and source 1, byte 2 source 2); flags C Z N V |
 | 0x91   | 3      | ADC2     | dst = dst + src + C, as ADD2; flags C Z N V |
 | 0x92   | 3      | SUB2     | dst = dst - src, as ADD2; flags C Z N V (6502) |
@@ -170,6 +172,7 @@ CMP3 at most one operand (source) of PSP, RSP, FP, TMPL, TMPH, ST, HLIM.
 | 0xC4   | 4      | LDR3     | load from base + offset (byte 3: an offset register, or with byte 2 bit 6 a signed 8-bit offset); sizes and signed as LDR (LDRB3, LDRSB3, LDRH3, LDRSH3, LDR3); no flags |
 | 0xC5   | 4      | STR3     | store to base + offset, as LDR3 (STRB3, STRH3, STR3); no flags |
 | 0xC6   | 4      | ENTER3   | ENTER with a 24-bit unsigned n words (bytes 1 .. 3) |
+| 0xC8   | 4      | NEXT3    | NEXT2 with a 16-bit signed offset (bytes 2, 3) |
 | 0xD0   | 4      | ADD3     | dst = src1 + src2: any three registers (byte 1 the destination, byte 2 source 1, byte 3 source 2); flags C Z N V |
 | 0xD1   | 4      | ADC3     | dst = src1 + src2 + C, as ADD3; flags C Z N V |
 | 0xD2   | 4      | SUB3     | dst = src1 - src2, as ADD3; flags C Z N V (6502) |
@@ -1270,6 +1273,73 @@ CBRL outside -524288 .. +524287.
             CJMPL A, 3              ; to offset 3 of this line
             CBRL  TZ, -1000         ; 1000 bytes back from the next instruction, if T == 0
 
+### UNEXT (0x48), NEXT2 (0x88), NEXT3 (0xC8)
+
+    UNEXT   byte 0   0x48
+            byte 1   bits 7..4: 0    bits 3..0: the target, an offset in the line
+
+    NEXT2   byte 0   0x88
+            byte 1   opx 00 (7..6)   the counter register (5..0)
+            byte 2   offset bits 7..0
+
+    NEXT3   byte 0   0xC8
+            byte 1   opx 00 (7..6)   the counter register (5..0)
+            byte 2   offset bits 7..0
+            byte 3   offset bits 15..8
+
+Counted loops, as Forth's FOR .. NEXT (and the F18's `next` / `unext`): the loop
+branches back while its counter is not 0, and counts it down as it does.
+
+    if counter != 0:  counter = counter - 1, jump to the target
+    else:             no jump; if the counter is R: R = pop (the return stack)
+
+The test is of the counter before it is counted down, so a count of n runs the body
+**n + 1 times**, and a count of 0 runs it once. When the loop ends the counter is 0;
+when it is R it is dropped, so what was below it on the return stack is R again.
+No flags change (a loop does not disturb a compare made in its body).
+
+- **UNEXT**: the counter is R, the target in the same 16-byte line as the UNEXT
+  (`{PC of the UNEXT [31:4], byte 1 bits 3..0}`, as CJMPL). The body is in fetch's
+  instruction buffer: the loop never makes fetch read memory. Byte 1 bits 7..4 must
+  be 0 (otherwise the instruction does nothing). At offset 15 its byte 1 would come
+  from the next line (read as 0): the assembler must not put one there.
+- **NEXT2**, **NEXT3**: the counter is any register of the register file (r0 ..
+  r31, T, S, R, L; with another one the instruction does nothing), the target the
+  next instruction + a signed offset: 8 bits (-128 .. +127) for NEXT2, 16 bits
+  (-32768 .. +32767) for NEXT3. Byte 1 bits 7..6 (opx) must be 00. With R as the
+  counter they drop R at the end as UNEXT does; with another register they leave it
+  at 0.
+
+        LIT8  9
+        PUSH                ; R = 9 (the old R below it)
+    l:  ...                 ; 10 times
+        NEXT2 R, l          ; at the end R is the old R again
+
+        MOVI2 r4, 99
+    m:  ...                 ; 100 times
+        NEXT  r4, m         ; NEXT2 or NEXT3, whichever reaches
+
+| stage           | what UNEXT, NEXT2, NEXT3 do |
+|-----------------|-----------------------------|
+| 2 decode        | the counter on port B, the constant 1 on port A; the ALU op RSB (B - A = counter - 1); the target into `d_imm` (UNEXT: `{PC[31:4], target}`; NEXT2, NEXT3: next + the offset, from the adder of CBR); the register write counter = r; for R also a pop of the return stack (the load and the `stackregs` op POP); `d_loop` = 1 |
+| 3 execute       | `ltake` = the counter (operand B) != 0, the same `tz` compare as the condition TZ. When it holds: redirect fetch to `e_imm`, write counter - 1 (ALU y), no load, no `stackregs` op. When it does not: no redirect; the write only with the load (R = the word popped), else nothing |
+| 4 memory access | the pop's load, when the loop ends with R; else the write of counter - 1 |
+| 5 writeback     | the counter's new value |
+
+The branch is decided on operand B itself, not on the result of the decrement, so
+the adder is not in the path to `redirect` (the same path as CJMPL TZ). A branch
+taken costs 2 ticks, as CJMPL, CBR (the two instructions behind it are thrown away),
+and for NEXT2, NEXT3 to another line the fill of the line. The counter is read on
+port B and forwarded like any operand, so it may be written by the instruction right
+before the loop instruction.
+
+Assembler syntax:
+
+    UNEXT <label-or-offset>             the label in the same line, or 0 .. 15
+    NEXT2 <reg>, <label-or-offset>      offset from the next instruction
+    NEXT3 <reg>, <label-or-offset>
+    NEXT  <reg>, <label>                pseudo: NEXT2, or NEXT3 when NEXT2 does not reach
+
 ### RET (0x01)
 
     byte 0   0x01           no operands
@@ -2146,6 +2216,7 @@ Forth words made of several opcodes. The return stack ends as it started.
 | n    | ( -- n )              | DUP LIT8 / LIT16 / LIT24 n |
 
 | (funcall) | ( f -- f )  R: ( -- ret ) | PUSH EXC (a call to the address in T) |
+| FOR .. NEXT | ( n -- )  the body n + 1 times | PUSH DROP ... NEXT R, body (the body in one line: ... UNEXT body) |
 
 ROT and -ROT are single opcodes now (ROT, DROT). Without them they would take 4
 opcodes, the shortest possible with the others: `PUSH DRIP DUP POPS` and

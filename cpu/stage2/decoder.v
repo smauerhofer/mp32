@@ -58,7 +58,8 @@ module decoder (
     output reg  [3:0]  d_cond,
     output reg         d_tgt,
     output reg         d_trap,         // CONS step 0: trap unless L <= HLIM
-    output reg         d_hl_we        // HLIM = r
+    output reg         d_hl_we,       // HLIM = r
+    output reg         d_loop         // UNEXT, NEXT2, NEXT3: branch to d_imm if operand B != 0
 );
     // ================================================================ names
     localparam [4:0] A_ADD = 0, A_ADC = 1, A_SUB = 2, A_SBC = 3, A_AND = 4, A_OR = 5,
@@ -208,6 +209,8 @@ module decoder (
             8'hC4, 8'hC5: offset = {{24{b3[7]}}, b3};              // LDR3 / STR3 imm8 (PC base)
             8'h42:   offset = {{24{b1[7]}}, b1};                   // JSRS,  8 bits
             8'h82:   offset = {{16{b2[7]}}, b2, b1};               // JSR,  16 bits
+            8'h88:   offset = {{24{b2[7]}}, b2};                   // NEXT2,  8 bits
+            8'hC8:   offset = {{16{b3[7]}}, b3, b2};               // NEXT3, 16 bits
             default: offset = {{ 8{b3[7]}}, b3, b2, b1};           // JSRL, 24 bits
         endcase
     assign target = next + offset;
@@ -276,7 +279,7 @@ module decoder (
         d_load = 0; d_store = 0; d_size = 2'b10; d_signed = 0; d_wdata = 0; d_addr = 0;
         d_sp_sel = PSP; d_sp_op = SP_BASE; d_tmp_we = 0; d_tmp_src = 0;
         d_tl_we = 0; d_th_we = 0; d_th_y2 = 0; d_tl_shl = 0; d_tl_shr = 0; d_st_we = 0;
-        d_jump = 0; d_cond = 0; d_tgt = 0; call = 0; d_trap = 0; d_hl_we = 0;
+        d_jump = 0; d_cond = 0; d_tgt = 0; call = 0; d_trap = 0; d_hl_we = 0; d_loop = 0;
 
         case (op)
         // ---------------------------------------------------- stack
@@ -412,6 +415,23 @@ module decoder (
                begin a_const = target; rb(T_); jump_(b1[7:4], 0); end
         8'h42, 8'h82, 8'hC2:                                                       // JSRS, JSR, JSRL
                begin a_const = next; rb(R_); push_(RSP, 1); rd_(R_, RES_A); call = 1; end
+        // ---------------------------------------------------- counted loops
+        // The counter on operand B, 1 on A: y = B - 1 (RSB). Execute branches to d_imm
+        // when the counter is not 0 (tz: operand B == 0, before the decrement), and then
+        // writes the counter - 1. When it is 0, the loop ends: no branch and no write,
+        // but for R the return stack is popped into R (the load and the stack op
+        // happen only then). No flags.
+        8'h48: if (b1[7:4] == 4'h0) begin                                          // UNEXT: R, in the line
+                   a_const = 1; rb(R_); d_alu_op = A_RSB; d_cin = CIN_1;
+                   d_imm = local_; d_loop = 1;
+                   pop_(RSP); rd_(R_, RES_Y);                                      // R = R - 1, or the pop
+               end
+        8'h88, 8'hC8: if (b1[7:6] == 2'b00 && in_file) begin                       // NEXT2, NEXT3
+                   a_const = 1; rb(reg6); d_alu_op = A_RSB; d_cin = CIN_1;
+                   d_imm = target; d_loop = 1;
+                   rd_(reg6, RES_Y);                                               // reg = reg - 1
+                   if (reg6 == R_) pop_(RSP);                                      // R: dropped at the end
+               end
         // ---------------------------------------------------- MOVR
         8'h43: if (b1[7]) ;                                                        // bit 7 must be 0
                else if (in_file) begin

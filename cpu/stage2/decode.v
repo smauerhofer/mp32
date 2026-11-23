@@ -13,8 +13,9 @@
 //
 // ---------------------------------------------------------------- addresses
 // next = the PC of the instruction + its length (the next instruction). One adder
-// makes target = next + the instruction's offset, for CBR, CBRL and the calls; CJMPL's
-// target is {PC[31:4], the offset in the line}.
+// makes target = next + the instruction's offset, for CBR, CBRL, NEXT2, NEXT3 and the
+// calls; CJMPL's and UNEXT's target is {PC[31:4], the offset in the line}. (UNEXT,
+// NEXT2, NEXT3 pass their target in d_imm: port A carries the 1 of the decrement.)
 //
 // ---------------------------------------------------------------- the calls
 // JSRS, JSR, JSRL always jump, and their destination is known here, so decode
@@ -120,6 +121,7 @@ module decode (
     output wire        d_tgt,
     output wire        d_trap,         // CONS step 0: trap unless L <= HLIM
     output wire        d_hl_we,        // HLIM = r
+    output wire        d_loop,         // UNEXT, NEXT2, NEXT3
 
     // ---- the special registers, to look at
     output wire [31:0] t,
@@ -156,7 +158,7 @@ module decode (
         .d_wdata(d_wdata), .d_addr(d_addr), .d_sp_sel(d_sp_sel), .d_sp_op(d_sp_op),
         .d_tmp_we(d_tmp_we), .d_tmp_src(d_tmp_src), .d_tl_we(d_tl_we), .d_th_we(d_th_we),
         .d_th_y2(d_th_y2), .d_tl_shl(d_tl_shl), .d_tl_shr(d_tl_shr), .d_st_we(d_st_we),
-        .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(d_trap), .d_hl_we(d_hl_we)
+        .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(d_trap), .d_hl_we(d_hl_we), .d_loop(d_loop)
     );
 
     // ================================================================ the pre-decode
@@ -177,7 +179,7 @@ module decode (
         .d_load(), .d_store(), .d_size(), .d_signed(), .d_wdata(), .d_addr(),
         .d_sp_sel(), .d_sp_op(), .d_tmp_we(), .d_tmp_src(), .d_tl_we(), .d_th_we(),
         .d_th_y2(), .d_tl_shl(), .d_tl_shr(), .d_st_we(), .d_jump(), .d_cond(), .d_tgt(),
-        .d_trap(), .d_hl_we()
+        .d_trap(), .d_hl_we(), .d_loop()
     );
 
     decoder next_step (                                    // this instruction, the next step
@@ -189,7 +191,7 @@ module decode (
         .d_load(), .d_store(), .d_size(), .d_signed(), .d_wdata(), .d_addr(),
         .d_sp_sel(), .d_sp_op(), .d_tmp_we(), .d_tmp_src(), .d_tl_we(), .d_th_we(),
         .d_th_y2(), .d_tl_shl(), .d_tl_shr(), .d_st_we(), .d_jump(), .d_cond(), .d_tgt(),
-        .d_trap(), .d_hl_we()
+        .d_trap(), .d_hl_we(), .d_loop()
     );
 
     always @(posedge clk)

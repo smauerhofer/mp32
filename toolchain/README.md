@@ -72,6 +72,10 @@ All the opcodes of `cpu/isa.md`, with the syntax given there:
     LIT8 n      LIT16 n      LIT24 n
     CJMPL cond, label-or-offset
     CBR cond, label-or-offset           CBRL cond, label-or-offset
+    UNEXT label-or-offset   if R != 0: R -= 1, jump within the line; else drop R
+    NEXT2 reg, label-or-offset          NEXT3 reg, label-or-offset
+                            if reg != 0: reg -= 1, branch (8 / 16-bit offset);
+                            else for R drop R (reg: r0..r31 T S R L)
     JSRS label-or-offset    JSR label-or-offset     JSRL label-or-offset
     MOVR dst, src           ADDR dst, src           ADCR dst, src
     SUBR dst, src           SBCR dst, src           ANDR dst, src
@@ -110,7 +114,7 @@ Registers for MOVR, ADDR .. CMPR, ADD2 .. CMP2 and ADD3 .. CMP3: `r0`..`r31`, `T
 the heap limit of CONS).
 
 For a branch or call, a label is turned into the offset from the next
-instruction (for CJMPL: the label's offset in the line); a plain number is put
+instruction (for CJMPL and UNEXT: the label's offset in the line); a plain number is put
 into the field as it is.
 
 Pseudo-instructions, which pick their length:
@@ -121,6 +125,7 @@ Pseudo-instructions, which pick their length:
 | `CALL label`   | the shortest of JSRS, JSR, JSRL; JSRL for a label in another segment or module |
 | `B cond, label`| CBR, or CBRL when CBR does not reach |
 | `JMP label`    | `B A, label` |
+| `NEXT reg, label` | NEXT2, or NEXT3 when NEXT2 does not reach |
 | `LEA label`    | `LIT24 offset` + `ADDR T, PC`: T = the address of the label, PC-relative (6 bytes) |
 
 `LEA` is there because the block RAM is at `$F0000000`: its addresses do not fit
@@ -223,7 +228,8 @@ line, so the linker can say where a field that does not fit came from.
 
 The relocation kinds (`Relocations.cs`) are the fields of the instruction set:
 `Abs8/16/32` for data, `Lit8/16/24`, `Rel8/16/24` (JSRS / JSR / JSRL), `Cbr12`,
-`Cbrl20`, `Cjmpl4` (checked to stay in its line) and `Lea24`.
+`Cbrl20`, `Cjmpl4` (CJMPL and UNEXT, checked to stay in its line), `Lea24`, and
+`Next8`, `Next16` (NEXT2 / NEXT3: the offset in byte 2 / bytes 2, 3).
 
 ## When the instruction set grows
 

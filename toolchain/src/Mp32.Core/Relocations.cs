@@ -29,13 +29,17 @@ public enum RelocType : byte
     Cbr12 = 10,
     /// <summary>CBRL: 20-bit offset, as CBR plus bits 19..12 in byte 3.</summary>
     Cbrl20 = 11,
-    /// <summary>CJMPL: the target's offset in the line, byte 1 bits 3..0; same line only.</summary>
+    /// <summary>CJMPL, UNEXT: the target's offset in the line, byte 1 bits 3..0; same line only.</summary>
     Cjmpl4 = 12,
     /// <summary>
     /// LEA: LIT24 followed by ADDR T, PC (6 bytes); the LIT24 holds the target
     /// minus the address after the ADDR, so T ends up as the target's address.
     /// </summary>
     Lea24 = 13,
+    /// <summary>NEXT2: 8-bit offset from the next instruction, in byte 2.</summary>
+    Next8 = 14,
+    /// <summary>NEXT3: 16-bit offset from the next instruction, in bytes 2..3.</summary>
+    Next16 = 15,
 }
 
 public static class Fields
@@ -44,8 +48,8 @@ public static class Fields
     public static int InstructionLength(RelocType type) => type switch
     {
         RelocType.Lit8 or RelocType.Rel8 or RelocType.Cjmpl4 => 2,
-        RelocType.Lit16 or RelocType.Rel16 or RelocType.Cbr12 => 3,
-        RelocType.Lit24 or RelocType.Rel24 or RelocType.Cbrl20 => 4,
+        RelocType.Lit16 or RelocType.Rel16 or RelocType.Cbr12 or RelocType.Next8 => 3,
+        RelocType.Lit24 or RelocType.Rel24 or RelocType.Cbrl20 or RelocType.Next16 => 4,
         RelocType.Lea24 => 6,
         _ => 0,
     };
@@ -113,6 +117,17 @@ public static class Fields
                 PutBranchOffset(data, offset, d, bits);
                 return null;
             }
+            case RelocType.Next8:
+            case RelocType.Next16:
+            {
+                int len = InstructionLength(type);
+                int bits = type == RelocType.Next8 ? 8 : 16;
+                long d = target - (place + len);
+                if (!Isa.FitsSigned(d, bits))
+                    return $"loop target out of range for {(bits == 8 ? "NEXT2" : "NEXT3")} (offset {d})";
+                WriteLe(data, offset + 2, d, bits / 8);
+                return null;
+            }
             case RelocType.Lea24:
             {
                 long d = target - (place + 6);
@@ -123,7 +138,7 @@ public static class Fields
             }
             case RelocType.Cjmpl4:
                 if ((target >> 4) != (place >> 4))
-                    return $"CJMPL target {Format(target)} is not in the same 16-byte line as the CJMPL at {Format(place)}";
+                    return $"target {Format(target)} is not in the same 16-byte line as the CJMPL / UNEXT at {Format(place)}";
                 data[offset + 1] = (byte)((data[offset + 1] & 0xF0) | (int)(target & 0xF));
                 return null;
             default:

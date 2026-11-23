@@ -242,7 +242,7 @@ module execute_tb;
         .d_st_we(1'b0),                      // ST: tested in stage2/decode_tb.v
         .d_b_imm(1'b0), .d_imm(32'h0),       // the immediate path: tested there too
         .d_th_y2(d_th_y2), .d_tl_shl(d_tl_shl), .d_tl_shr(d_tl_shr),
-        .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(1'b0), .d_hl_we(1'b0),
+        .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(1'b0), .d_hl_we(1'b0), .d_loop(1'b0),
         .advance(advance),
         .mem_stall(mem_stall),
         .x_valid(x_valid), .x_load(x_load), .x_store(x_store), .x_size(x_size),

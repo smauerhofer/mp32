@@ -275,6 +275,50 @@ public class AssemblerTests
     }
 
     [Fact]
+    public void CountedLoops()
+    {
+        var code = Asm.Code("""
+            loop:   NOP
+                    UNEXT loop
+                    NEXT2 r4, loop
+                    NEXT3 R, loop
+                    UNEXT 5
+            """);
+        // UNEXT: byte 1 = the offset in the line; NEXT2 at 3: 0 - 6 = $FA in byte 2;
+        // NEXT3 at 6 (R = $22): 0 - 10 = $FFF6 in bytes 2, 3
+        Assert.Equal("00 48 00 88 04 FA C8 22 F6 FF 48 05", Asm.Hex(code[..12]));
+    }
+
+    [Fact]
+    public void NextPicksTheShortestForm()
+    {
+        var near = Asm.Code("x: NOP\n  NEXT r1, x\n");
+        Assert.Equal("88 01 FC", Asm.Hex(near[1..4]));      // NEXT2, offset 0 - 4
+
+        var far = Asm.Code("x: NOP\n  .res 200\n  NEXT T, x\n");
+        Assert.Equal(0xC8, far[201]);                        // NEXT3
+        Assert.Equal(0x20, far[202]);                        // T
+    }
+
+    [Theory]
+    [InlineData("x: NEXT2 PSP, x")]
+    [InlineData("x: NEXT3 PC, x")]
+    [InlineData("x: NEXT ST, x")]
+    public void NextCounterMustBeInTheRegisterFile(string line) =>
+        Assert.Contains(Asm.Errors($"{line}\n"), e => e.Contains("counter"));
+
+    [Fact]
+    public void Next2OutOfRangeIsAnError() =>
+        Assert.Contains(Asm.Errors("x: NOP\n  .res 200\n  NEXT2 r1, x\n"), e => e.Contains("out of range"));
+
+    [Fact]
+    public void UnextOutsideTheLineIsAnError()
+    {
+        var src = "a: NOP\n" + string.Concat(Enumerable.Repeat("  NOP\n", 20)) + "  UNEXT a\n";
+        Assert.Contains(Asm.Errors(src), e => e.Contains("same 16-byte line"));
+    }
+
+    [Fact]
     public void UnsignedConditionAliases() =>
         Assert.Equal(Asm.Hex(Asm.Code("x: CBR HS, x\n CBR LO, x\n")), Asm.Hex(Asm.Code("x: CBR CS, x\n CBR CC, x\n")));
 

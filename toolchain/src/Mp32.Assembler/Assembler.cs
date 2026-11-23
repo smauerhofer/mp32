@@ -681,7 +681,7 @@ public sealed class Assembler(AssemblerOptions? options = null) : IEvalContext
     }
 
     private static bool IsPseudo(string name) =>
-        name.ToUpperInvariant() is "LIT" or "CALL" or "B" or "JMP" or "LEA";
+        name.ToUpperInvariant() is "LIT" or "CALL" or "B" or "JMP" or "LEA" or "NEXT";
 
     // ------------------------------------------------------------------ instructions
 
@@ -734,6 +734,17 @@ public sealed class Assembler(AssemblerOptions? options = null) : IEvalContext
                 });
                 return;
             }
+        }
+
+        if (mn == "NEXT")
+        {
+            Need(ops, 2, 2, word);
+            AddStmt(new InstrStmt
+            {
+                Src = sl, Sec = CurrentSection, Mode = InstrMode.NextAuto, Form = OperandForm.RegRel, Size = 3,
+                Register = ParseCounter(t, ops[0], "NEXT"), Operand = ParseExpr(t, ops[1].Start, ops[1].End, sl),
+            });
+            return;
         }
 
         if (!Isa.ByMnemonic.TryGetValue(mn, out var op))
@@ -893,6 +904,23 @@ public sealed class Assembler(AssemblerOptions? options = null) : IEvalContext
                     Operand2 = ParseExpr(t, ops[1].Start, ops[1].End, sl),
                 });
                 break;
+            case OperandForm.Local:
+                Need(ops, 1, 1, word);
+                AddStmt(new InstrStmt
+                {
+                    Src = sl, Sec = CurrentSection, Op = op, Form = op.Form, Size = op.Length,
+                    Operand = ParseExpr(t, ops[0].Start, ops[0].End, sl),
+                });
+                break;
+            case OperandForm.RegRel:
+                Need(ops, 2, 2, word);
+                AddStmt(new InstrStmt
+                {
+                    Src = sl, Sec = CurrentSection, Op = op, Form = op.Form, Size = op.Length,
+                    Register = ParseCounter(t, ops[0], op.Mnemonic),
+                    Operand = ParseExpr(t, ops[1].Start, ops[1].End, sl),
+                });
+                break;
             case OperandForm.RegRegReg:
             {
                 Need(ops, 3, 3, word);
@@ -919,6 +947,15 @@ public sealed class Assembler(AssemblerOptions? options = null) : IEvalContext
             Isa.Conditions.TryGetValue(t[op.Start].Text, out var c))
             return c;
         throw new AsmException("condition expected: EQ NE CS/HS CC/LO MI PL VS VC HI LS GE LT GT LE A TZ", t[op.Start].Column);
+    }
+
+    /// <summary>The counter of NEXT2 / NEXT3: a register of the register file (r0..r31, T, S, R, L).</summary>
+    private static int ParseCounter(List<Token> t, (int Start, int End) op, string mnemonic)
+    {
+        int r = ParseRegister(t, op);
+        if (!Isa.IsFileReg(r))
+            throw new AsmException($"{mnemonic}: the counter must be r0..r31, T, S, R or L", t[op.Start].Column);
+        return r;
     }
 
     private static int ParseRegister(List<Token> t, (int Start, int End) op)
@@ -1043,6 +1080,8 @@ public sealed class Assembler(AssemblerOptions? options = null) : IEvalContext
                 return 4;
             case InstrMode.BranchAuto:
                 return RelFits(v, i, 3, 12) ? 3 : 4;
+            case InstrMode.NextAuto:
+                return RelFits(v, i, 3, 8) ? 3 : 4;
             default:
                 return i.Size;
         }
@@ -1323,6 +1362,30 @@ public sealed class Assembler(AssemblerOptions? options = null) : IEvalContext
                 Relative(i, v, type, bits, col);
                 return;
             }
+            case OperandForm.Local:                                 // UNEXT
+            {
+                data[a] = 0x48;
+                data[a + 1] = 0;
+                if (v.IsConstant)
+                {
+                    if (v.Num is < 0 or > 15) throw new AsmException("UNEXT offset in the line must be 0 .. 15", col);
+                    data[a + 1] = (byte)v.Num;
+                }
+                else if (ReferenceEquals(v.Base, i.Sec))
+                {
+                    var err = Fields.Apply(data, a, RelocType.Cjmpl4, v.Num, a);
+                    if (err is not null) throw new AsmException(err, col);
+                }
+                else AddReloc(i.Sec, a, RelocType.Cjmpl4, v, i.Src);
+                return;
+            }
+            case OperandForm.RegRel:                                // NEXT2, NEXT3
+            {
+                data[a] = len == 3 ? (byte)0x88 : (byte)0xC8;
+                data[a + 1] = (byte)i.Register;                     // opx 00
+                Relative(i, v, len == 3 ? RelocType.Next8 : RelocType.Next16, len == 3 ? 8 : 16, col);
+                return;
+            }
             case OperandForm.Rel:
             {
                 data[a] = len switch { 2 => 0x42, 3 => 0x82, _ => 0xC2 };
@@ -1343,6 +1406,7 @@ public sealed class Assembler(AssemblerOptions? options = null) : IEvalContext
             if (!Isa.FitsSigned(v.Num, bits))
                 throw new AsmException($"offset {v.Num} does not fit in {bits} bits", col);
             if (type is RelocType.Cbr12 or RelocType.Cbrl20) Fields.PutBranchOffset(data, a, v.Num, bits);
+            else if (type is RelocType.Next8 or RelocType.Next16) Fields.WriteLe(data, a + 2, v.Num, bits / 8);
             else Fields.WriteLe(data, a + 1, v.Num, bits / 8);
         }
         else if (ReferenceEquals(v.Base, i.Sec))

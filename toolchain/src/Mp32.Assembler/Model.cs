@@ -62,6 +62,8 @@ internal enum InstrMode
     BranchAuto,
     /// <summary>LEA target: LIT24 + ADDR T, PC, 6 bytes, PC-relative.</summary>
     Lea,
+    /// <summary>NEXT reg, target: NEXT2 or NEXT3.</summary>
+    NextAuto,
 }
 
 internal sealed class InstrStmt : Stmt

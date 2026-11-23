@@ -35,6 +35,10 @@ public enum OperandForm
     ShiftImm,
     /// <summary>TTAG: byte 1 = the mask, byte 2 = the value (two constants 0..255).</summary>
     Tag,
+    /// <summary>UNEXT: byte 1 = 0 (7..4), the target's offset in the line (3..0).</summary>
+    Local,
+    /// <summary>NEXT2 / NEXT3: byte 1 = opx 0 (7..6), the counter register (5..0); signed offset in bytes 2..n.</summary>
+    RegRel,
 }
 
 /// <summary>One opcode of the mp32 instruction set (cpu/isa.md).</summary>
@@ -110,6 +114,7 @@ public static class Isa
         new("TADD",  0x32, OperandForm.None, "( a b -- a+b ), V also if a tag is not 00 (fixnums)"),
         new("TSUB",  0x33, OperandForm.None, "( a b -- a-b ), V also if a tag is not 00 (fixnums)"),
         new("LIT8",  0x40, OperandForm.Imm, "T = 8-bit signed constant"),
+        new("UNEXT", 0x48, OperandForm.Local, "if R != 0: R = R - 1, jump within the line; else drop R (pop the return stack into R)"),
         new("CJMPL", 0x41, OperandForm.CondLocal, "conditional jump within the line"),
         new("JSRS",  0x42, OperandForm.Rel, "call, 8-bit offset"),
         new("MOVR",  0x43, OperandForm.RegMove, "move between T and a register"),
@@ -136,6 +141,7 @@ public static class Isa
         new("JSR",   0x82, OperandForm.Rel, "call, 16-bit offset"),
         new("ENTER2", 0x86, OperandForm.UImm, "ENTER with a 16-bit size (words)"),
         new("TTAG",  0x87, OperandForm.Tag, "Z = ((T & mask) == value); T unchanged"),
+        new("NEXT2", 0x88, OperandForm.RegRel, "if reg != 0: reg = reg - 1, branch (8-bit offset); else for R drop R"),
         new("LDR",   0x84, OperandForm.Mem, "load a word: reg = mem32[addr]"),
         new("LDRH",  0x84, OperandForm.Mem, "load a halfword, zero-extended"),
         new("LDRSH", 0x84, OperandForm.Mem, "load a halfword, sign-extended"),
@@ -166,6 +172,7 @@ public static class Isa
         new("CBRL",  0xC1, OperandForm.CondRel, "conditional branch, 20-bit offset"),
         new("JSRL",  0xC2, OperandForm.Rel, "call, 24-bit offset"),
         new("ENTER3", 0xC6, OperandForm.UImm, "ENTER with a 24-bit size (words)"),
+        new("NEXT3", 0xC8, OperandForm.RegRel, "NEXT2 with a 16-bit offset"),
         new("ADD3",  0xD0, OperandForm.RegRegReg, "dst = src1 + src2, any three registers"),
         new("ADC3",  0xD1, OperandForm.RegRegReg, "dst = src1 + src2 + C"),
         new("SUB3",  0xD2, OperandForm.RegRegReg, "dst = src1 - src2"),

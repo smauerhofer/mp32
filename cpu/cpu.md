@@ -83,6 +83,10 @@ The block RAM's base and size are parameters of `stage4/membus.v`.
 
 ## Pipeline
 
+`cpu.v` wires the five stages together: the processor, with a port for lines of code
+(fetch) and one for data (memory access), both to the memory system
+(`stage4/memsys.v`). `../computer` puts it on the board.
+
 | stage | name   | folder   | status |
 |-------|--------|----------|--------|
 | 1     | fetch            | `stage1` | done, tested |
@@ -161,7 +165,8 @@ control word of execute (see execute.v).
   LIT's constant (sign-extended), a jump's target, a return address, the PC, the
   shift amount 1, the 0 of NEG.
 - **Addresses:** next = PC + length; one adder makes target = next + the offset of
-  CBR, CBRL, JSRS, JSR, JSRL; CJMPL's target is {PC[31:4], the offset in the line}.
+  CBR, CBRL, JSRS, JSR, JSRL, NEXT2, NEXT3; CJMPL's and UNEXT's target is {PC[31:4],
+  the offset in the line}.
 - **Calls** (JSRS, JSR, JSRL): decode redirects fetch itself as execute takes the
   call (1 tick); execute pushes R and writes the return address into R. When
   execute jumps in the same tick, execute's target wins and the call is thrown
@@ -416,6 +421,12 @@ runs the LISP opcodes in its random code too, with a GC handler at its GC vector
   bytes, CBRL (0xC1) +-512 KB; to another line it costs the fill too. RET (0x01)
   jumps to R (operand A, forwarded) and pops the return stack into R. EXC (0x1F)
   jumps to R and puts the address after it into R (operand B, a constant).
+- Counted loops (UNEXT 0x48, NEXT2 0x88, NEXT3 0xC8, `d_loop`): the counter on
+  operand B, 1 on A, the ALU makes counter - 1; the target comes in `d_imm`.
+  Execute branches when the counter (operand B, the `tz` compare) is not 0, and then
+  writes counter - 1 and drops the load and the `stackregs` op; when it is 0 there
+  is no branch, and the write is only that of the load (R popped, for R as the
+  counter). So the adder is not on the path to `redirect`.
 - Calls (JSRS 0x42, JSR 0x82, JSRL 0xC2) always jump and their destination is
   known in decode, so **decode redirects fetch** for them, as it issues the call:
   1 tick (only the instruction in fetch's output is thrown away). Execute then does
@@ -679,10 +690,10 @@ critical path is from TMPL / the stack pointers through the ALU's adder to
   I/O decoder behind `io_*`.
 - The boot program for the block RAM (a `$readmemh` file for `BRAM_INIT`).
 - The real interrupt sequence (`irq_sequence.v`), and where `irq_pending` comes from.
-- Putting the stages together into the processor (with the memory bus and the
-  interrupt sequence).
+- The interrupt sequence (the stages are put together in `cpu.v`, and the computer
+  in `../computer`: see its README).
 - The opcodes that read and write TMPL and TMPH, and the 64-bit shift opcodes.
 - A shift right of {C, T} by one, to get the remainder after DIVS.
   The sequencer is done: ROT and DROT are two steps, all else one.
-- The other jumps (CJMPL, CBR, CBRL, RET and EXC redirect from execute; the calls
+- The other jumps (CJMPL, CBR, CBRL, UNEXT, NEXT2, NEXT3, RET and EXC redirect from execute; the calls
   JSRS, JSR, JSRL from decode).
