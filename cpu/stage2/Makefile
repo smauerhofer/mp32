@@ -2,7 +2,9 @@
 #   make test             run the test benches
 #   make test-decode      run one of them: regfile, sequencer, decode (the whole
 #                         pipeline, fetch to writeback, on random machine code) or
-#                         lisp (the LISP opcodes in a real program, lisp.s)
+#                         lisp (the LISP opcodes in a real program, lisp.s) or
+#                         loop (the counted loops UNEXT, NEXT2, NEXT3 in a real
+#                         program, loop.s)
 #   make size             what decode takes on the chip
 #   make clean            throw away what the build made
 BUILD ?= build
@@ -18,7 +20,7 @@ OTHERS = ../stage1/fetch.v ../stage1/pc.v ../stage1/irq_sequence.v \
          ../stage3/scratch.v ../stage3/tmplh.v \
          ../stage4/memaccess.v ../stage5/writeback.v
 
-test: test-regfile test-sequencer test-decode test-lisp
+test: test-regfile test-sequencer test-decode test-lisp test-loop
 
 # Simulation: iverilog compiles a test bench, vvp runs it. MP32_SIM: mul.v uses its
 # simulation model instead of the chip's multiplier.
