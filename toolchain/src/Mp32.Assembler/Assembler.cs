@@ -797,7 +797,7 @@ public sealed class Assembler(AssemblerOptions? options = null) : IEvalContext
                 int dst = ParseRegister(t, ops[0]);
                 int src = ParseRegister(t, ops[1]);
                 if (Isa.IsStage3(dst) && Isa.IsStage3(src))
-                    throw new AsmException($"{op.Mnemonic}: at most one of PSP, RSP, FP, TMPL, TMPH, ST, HLIM", t[ops[0].Start].Column);
+                    throw new AsmException($"{op.Mnemonic}: at most one of PSP, RSP, FP, TMPL, TMPH, ST, HLIM, VEC", t[ops[0].Start].Column);
                 AddStmt(new InstrStmt
                 {
                     Src = sl, Sec = CurrentSection, Op = op, Form = op.Form, Size = op.Length,
@@ -850,7 +850,7 @@ public sealed class Assembler(AssemblerOptions? options = null) : IEvalContext
                     if (r3 == (0x20 | Isa.SpecialRegisters["PC"]))
                         throw new AsmException($"{op.Mnemonic}: the offset register cannot be PC", t[ops[2].Start].Column);
                     if (Isa.IsStage3(bas) && Isa.IsStage3(r3))
-                        throw new AsmException($"{op.Mnemonic}: at most one of base and offset of PSP, RSP, FP, TMPL, TMPH, ST, HLIM", t[ops[1].Start].Column);
+                        throw new AsmException($"{op.Mnemonic}: at most one of base and offset of PSP, RSP, FP, TMPL, TMPH, ST, HLIM, VEC", t[ops[1].Start].Column);
                     if (store && Isa.IsFileReg(bas) && Isa.IsFileReg(r3))
                         throw new AsmException($"{op.Mnemonic}: data, base and offset cannot all be r0..r31, T, S, R, L (two read ports)", t[ops[1].Start].Column);
                 }
@@ -928,7 +928,7 @@ public sealed class Assembler(AssemblerOptions? options = null) : IEvalContext
                 int src1 = ParseRegister(t, ops[1]);
                 int src2 = ParseRegister(t, ops[2]);
                 if (Isa.IsStage3(src1) && Isa.IsStage3(src2))
-                    throw new AsmException($"{op.Mnemonic}: at most one source of PSP, RSP, FP, TMPL, TMPH, ST, HLIM", t[ops[1].Start].Column);
+                    throw new AsmException($"{op.Mnemonic}: at most one source of PSP, RSP, FP, TMPL, TMPH, ST, HLIM, VEC", t[ops[1].Start].Column);
                 if (op.Mnemonic == "CMP3" && dst == (0x20 | Isa.SpecialRegisters["PC"]))
                     throw new AsmException("CMP3: the destination cannot be PC", t[ops[0].Start].Column);
                 AddStmt(new InstrStmt
@@ -1266,11 +1266,13 @@ public sealed class Assembler(AssemblerOptions? options = null) : IEvalContext
         }
         switch (i.Form)
         {
-            case OperandForm.UImm:                                  // ENTER, ENTER2, ENTER3
+            case OperandForm.UImm:                                  // ENTER, ENTER2, ENTER3; INTR, EXC
             {
                 int bits = 8 * (len - 1);
+                string what = i.Op!.Mnemonic.StartsWith("ENTER", StringComparison.OrdinalIgnoreCase)
+                    ? "the size (in words)" : "the number";
                 if (!v.IsConstant)
-                    throw new AsmException($"{i.Op!.Mnemonic}: the size (in words) must be a constant", col);
+                    throw new AsmException($"{i.Op!.Mnemonic}: {what} must be a constant", col);
                 if (v.Num < 0 || v.Num >= (1L << bits))
                     throw new AsmException($"{i.Op!.Mnemonic}: {Fields.Format(v.Num)} out of range 0..{Fields.Format((1L << bits) - 1)}", col);
                 data[a] = i.Op!.Opcode;

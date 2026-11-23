@@ -12,16 +12,18 @@
 //
 // Phase 1 runs straight through, never stalled, to measure the speed.
 // Phase 2 stalls the fetch at random, redirects it at random to the start of some
-// instruction (a taken branch), and makes interrupts pending at random. For an
-// interrupt it plays the later stages: when the last instruction of the sequence
-// reaches decode it clears irq_pending (the acknowledge), and a few ticks later it
-// redirects to a random instruction (the jump to the handler). A random branch can
-// come in the middle of a sequence; then the sequence must start again.
+// instruction (a taken branch; now and then with an exception, as decode does for an
+// undefined opcode), and makes interrupts pending at random, with a random number.
+// For an interrupt or an exception it plays the later stages: when the injected INTR
+// or EXC reaches decode it clears irq_pending (the I flag goes to 0), and a few ticks
+// later it redirects to a random instruction (the jump to the handler). A random branch
+// can come before that; then an interrupt still pending must be injected again.
 //
 // Every instruction that comes out is checked: PC, the 4 bytes, the length, and
-// f_inject. An injected instruction must be the next one of the sequence, with
-// f_pc = the address of the next instruction of the program (the PC did not move).
-// Between the end of a sequence and the jump nothing may come out.
+// f_inject. An injected instruction must be EXC n right after a redirect with an
+// exception (even with an interrupt pending), else INTR irq_num, with f_pc = the
+// address of the next instruction of the program (the PC did not move). Between it and
+// the jump nothing may come out.
 
 `timescale 1ns/1ps
 
@@ -36,7 +38,10 @@ module fetch_tb;
     reg          reset = 1;
     reg          redirect = 0;
     reg  [31:0]  redirect_pc = 0;
+    reg          redirect_exc = 0;
+    reg  [7:0]   redirect_exc_n = 0;
     reg          irq_pending = 0;
+    reg  [7:0]   irq_num = 0;
     reg          stall = 0;
     wire         f_valid;
     wire [31:0]  f_pc, f_instr;
@@ -51,9 +56,11 @@ module fetch_tb;
     // The program here starts at 0, so the PC must too (the default is 0xF000_0000).
     fetch #(.RESET_PC(32'h0000_0000)) dut (
         .clk(clk), .reset(reset),
-        .redirect(redirect), .redirect_pc(redirect_pc), .irq_pending(irq_pending),
+        .redirect(redirect), .redirect_pc(redirect_pc),
+        .redirect_exc(redirect_exc), .redirect_exc_n(redirect_exc_n),
+        .irq_pending(irq_pending), .irq_num(irq_num),
         .stall(stall), .f_valid(f_valid), .f_pc(f_pc), .f_instr(f_instr), .f_len(f_len),
-        .f_inject(f_inject),
+        .f_inject(f_inject), .f_next_instr(), .f_load(),
         .line_sel(line_sel), .line_addr(line_addr), .line_data(line_data),
         .line_ready(line_ready), .pc(pc)
     );
@@ -123,19 +130,16 @@ module fetch_tb;
     // ================================================================ checking
     integer idx = 0, checked = 0, errors = 0, ticks = 0, phase = 1;
     integer redirects = 0, target, irq_ticks = 0;
-    integer sequences = 0, restarts = 0, injected = 0;
-    integer seq_pos   = 0;       // the next instruction of the sequence expected
+    integer interrupts = 0, exceptions = 0, injected = 0, exc_redirects = 0;
     integer jump_in   = -1;      // ticks to the jump to the handler; -1: none coming
-    reg     seq_done  = 0;       // the sequence is out; nothing more until the jump
+    reg     seq_done  = 0;       // INTR / EXC is out; nothing more until the jump
+    reg     exc_exp   = 0;       // an exception was asked for: EXC exc_n_exp comes next
+    reg [7:0] exc_n_exp = 0;
+    reg [31:0] ref_instr;
     reg     irq_prev  = 0;       // at the edge before: an interrupt pending, f_* loaded,
     reg     took_prev = 0;       // no redirect
     reg     redir_prev = 0;
 
-    // the sequence, as the test bench expects it
-    reg  [3:0]  ref_index = 0;
-    wire [31:0] ref_instr;
-    wire        ref_last;
-    irq_sequence ref_seq (.index(ref_index), .instr(ref_instr), .last(ref_last));
 
     task fail(input [8*40-1:0] what);
         begin
@@ -153,22 +157,22 @@ module fetch_tb;
             else if (idx >= n_ins)
                 fail("ran past the end of the program");
             else if (f_inject) begin
-                ref_index = seq_pos;
-                #0;
-                if (f_pc !== exp_pc[idx] || f_instr !== ref_instr ||
-                    f_len !== {1'b0, ref_instr[7:6]} + 3'd1)
+                ref_instr = exc_exp ? {16'h0, exc_n_exp, 8'h4A} : {16'h0, irq_num, 8'h49};
+                if (!exc_exp && !irq_prev)
+                    fail("injected with nothing pending");
+                if (f_pc !== exp_pc[idx] || f_instr !== ref_instr || f_len !== 3'd2)
                     fail("wrong injected instruction");
-                if (seq_pos == 0) sequences = sequences + 1;
-                seq_pos  = seq_pos + 1;
+                if (exc_exp) exceptions = exceptions + 1;
+                else         interrupts = interrupts + 1;
                 injected = injected + 1;
-                if (ref_last) begin             // the later stages: acknowledge, jump
-                    seq_done    = 1;
-                    irq_pending <= 0;
-                    jump_in     = $random(seed) & 3;
-                end
+                // the later stages: I = 0 (an interrupt), then the jump to the handler
+                seq_done    = 1;
+                if (!exc_exp) irq_pending <= 0;
+                exc_exp     = 0;
+                jump_in     = $random(seed) & 3;
             end else begin
-                if (seq_pos != 0)
-                    fail("the sequence was cut short");
+                if (exc_exp)
+                    fail("the exception was not injected first");
                 if (irq_prev && took_prev && !redir_prev)
                     fail("not injected while an interrupt was pending");
                 if (f_pc !== exp_pc[idx] || f_instr !== exp_ins[idx] ||
@@ -191,24 +195,32 @@ module fetch_tb;
         took_prev  = !stall || !f_valid;
         redir_prev = redirect;
         if (redirect) begin
-            if (seq_pos != 0 && !seq_done) restarts = restarts + 1;
-            idx      = target;
-            seq_pos  = 0;
-            seq_done = 0;
-            jump_in  = -1;
+            idx       = target;
+            seq_done  = 0;
+            jump_in   = -1;
+            exc_exp   = redirect_exc;
+            exc_n_exp = redirect_exc_n;
         end
 
         // what decode and the later stages do in the next tick
         if (phase == 2) begin
             stall    <= ($random(seed) & 3) == 0;
             redirect <= 0;
-            if (!irq_pending && !seq_done && ($random(seed) & 63) == 0)
+            redirect_exc <= 0;
+            if (!irq_pending && !seq_done && ($random(seed) & 63) == 0) begin
                 irq_pending <= 1;
+                irq_num     <= $random(seed);
+            end
             if (jump_in == 0 || ($random(seed) & 31) == 0) begin
-                // the jump to the handler, or a branch
+                // the jump to the handler, or a branch (now and then with an exception)
                 target      = ($random(seed) & 32'h7FFF_FFFF) % (n_ins - 64);
                 redirect    <= 1;
                 redirect_pc <= exp_pc[target];
+                if (($random(seed) & 7) == 0) begin
+                    redirect_exc   <= 1;
+                    redirect_exc_n <= $random(seed);
+                    exc_redirects  = exc_redirects + 1;
+                end
                 redirects   = redirects + 1;
                 jump_in     = -1;
             end else if (jump_in > 0)
@@ -244,8 +256,12 @@ module fetch_tb;
         @(posedge clk);
         $display("phase 2: %0d instructions checked, %0d redirects, %0d ticks with an interrupt pending",
                  checked, redirects, irq_ticks);
-        $display("         %0d sequences started, %0d instructions injected, %0d sequences cut by a branch",
-                 sequences, injected, restarts);
+        $display("         %0d INTR, %0d EXC injected (%0d redirects asked for an exception)",
+                 interrupts, exceptions, exc_redirects);
+        if (interrupts < 100 || exceptions < 100) begin
+            errors = errors + 1;
+            $display("too few interrupts or exceptions");
+        end
 
         if (errors == 0 && port_errors == 0)
             $display("PASS");

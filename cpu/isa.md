@@ -52,9 +52,13 @@ has no opx bits, and byte 0 alone is its opcode. LIT8, LIT16 and LIT24 (0x40, 0x
 ### The status register ST
 
 ST (special register 01010, selector 0x2A) holds the flags in its low four bits,
-in the order CMP3 writes them:
+in the order CMP3 writes them, and shows the interrupt flag I in bit 4:
 
-    bit 0 C    bit 1 Z    bit 2 N    bit 3 V    bits 31..4: read as 0
+    bit 0 C    bit 1 Z    bit 2 N    bit 3 V    bit 4 I (read only)    bits 31..5: read as 0
+
+I is changed only by CLI, SEI, RTI and a device's interrupt (see Interrupts and
+exceptions): a write to ST leaves it as it is, so a handler that saves ST and puts it
+back does not turn interrupts on early.
 
 Any instruction that names a register can use it: `MOVR T, ST` reads the flags,
 `MOVR ST, T` sets all four from T's bits 3..0 (the bits above are dropped),
@@ -108,7 +112,7 @@ CMP3 at most one operand (source) of PSP, RSP, FP, TMPL, TMPH, ST, HLIM.
 | 0x1C   | 1      | NEG      | T = 0 - T; flags C Z N V (6502) |
 | 0x1D   | 1      | MULS     | one step of a 32 x 32 multiply on {T, TMPL} by S: add if TMPL[0], then shift right; no flags |
 | 0x1E   | 1      | CMP      | flags of S - T as SUB (C Z N V, 6502); S, T and the stacks unchanged |
-| 0x1F   | 1      | EXC      | exchange R and PC: PC = R, R = the next instruction |
+| 0x1F   | 1      | EXEC     | exchange R and PC: PC = R, R = the next instruction |
 | 0x20   | 1      | ASL      | T = T << 1, bit 31 kept; flags C Z N V (V = 2* overflows) |
 | 0x21   | 1      | ASR      | T = T >> 1, bit 31 kept; flags C Z N V (C = the bit out, V = 0) |
 | 0x22   | 1      | LSL      | T = T << 1, 0 into bit 0; flags C Z N V (C = the bit out, V as ASL) |
@@ -126,19 +130,24 @@ CMP3 at most one operand (source) of PSP, RSP, FP, TMPL, TMPH, ST, HLIM.
 | 0x2E   | 1      | RPLACA   | the word at T - 1 = S (set the car); the stack unchanged |
 | 0x2F   | 1      | RPLACD   | the word at T + 3 = S (set the cdr); the stack unchanged |
 | 0x30   | 1      | LEAVE    | RSP = FP, then pop FP from the return stack (FP = R, R = pop); drops ENTER's frame |
-| 0x31   | 1      | CONS     | ( car cdr -- cell ): a cell at L, L = L + 8, four steps; if L > HLIM: a trap (call) to the GC vector that comes back to the CONS |
+| 0x31   | 1      | CONS     | ( car cdr -- cell ): a cell at L, L = L + 8, four steps; if L > HLIM: exception 4 (EXC 4 at the CONS: its handler returns to the CONS) |
 | 0x32   | 1      | TADD     | as ADD; V also when S or T is not a fixnum (low bits not 00); flags C Z N V |
 | 0x33   | 1      | TSUB     | as SUB; V also when S or T is not a fixnum; flags C Z N V |
+| 0x34   | 1      | CLI      | I = 0: no interrupts from devices |
+| 0x35   | 1      | SEI      | I = 1: interrupts from devices on |
+| 0x36   | 1      | RTI      | the end of an interrupt handler: RET, and I = 1 |
 | 0x40   | 2      | LIT8     | T = an 8-bit signed constant (byte 1) |
 | 0x41   | 2      | CJMPL    | if the condition (byte 1 bits 7..4) holds: PC[3:0] = byte 1 bits 3..0 (a jump within the line) |
 | 0x42   | 2      | JSRS     | call: push R onto the return stack, R = the next instruction, jump to it + an 8-bit signed offset |
-| 0x43   | 2      | MOVR     | copy T into a register (r0 .. r31, S, R, L, PSP, RSP, FP, PC, TMPL, TMPH, ST), or a register into T |
+| 0x43   | 2      | MOVR     | copy T into a register (r0 .. r31, S, R, L, PSP, RSP, FP, PC, TMPL, TMPH, ST, HLIM, VEC), or a register into T |
 | 0x44   | 2      | INCR     | byte 1 = 00 reg: reg = reg + 1; flags C Z N V |
 | 0x44   | 2      | DECR     | byte 1 = 10 reg: reg = reg - 1; flags C Z N V (6502) |
 | 0x44   | 2      | INCWR    | byte 1 = 01 reg: reg = reg + 4; flags C Z N V |
 | 0x44   | 2      | DECWR    | byte 1 = 11 reg: reg = reg - 4; flags C Z N V (6502) |
 | 0x46   | 2      | ENTER    | push FP onto the return stack (push R, R = FP), FP = RSP, RSP = RSP - 4n (n words: byte 1, unsigned) |
 | 0x47   | 2      | LSLI .. RORI | SHI: T shifted / rotated by a constant 0 .. 31 (byte 1: op in bits 7..5, count in 4..0); flags C Z N V |
+| 0x49   | 2      | INTR     | interrupt n (byte 1, 0 .. 255): push R onto the return stack, R = the next instruction, jump to VEC + 4n |
+| 0x4A   | 2      | EXC      | exception n (byte 1): push R onto the return stack, R = this instruction, jump to VEC + 4n |
 | 0x48   | 2      | UNEXT    | if R != 0: R = R - 1 and jump within the line (PC[3:0] = byte 1 bits 3..0); else drop R (pop the return stack into R); no flags |
 | 0x50   | 2      | ADDR     | add T to a register, or a register to T (the register named as in MOVR); flags C Z N V |
 | 0x51   | 2      | ADCR     | as ADDR, with the carry: + C; flags C Z N V |
@@ -1415,25 +1424,27 @@ The assembler syntax: `JSRS <label-or-offset>`, `JSR <label-or-offset>`,
 `JSRL <label-or-offset>`; a label gives the offset from the next instruction, a
 number is the offset itself. The assembler picks the shortest that fits.
 
-### EXC (0x1F)
+### EXEC (0x1F)
 
     byte 0   0x1F           no operands
 
+(Called EXC before; EXC is now the exception, 0x4A.)
+
 Exchanges R and the PC: the program goes on at the address in R, and the address
-of the next instruction (after the EXC) goes into R. The stacks and the flags do
+of the next instruction (after the EXEC) goes into R. The stacks and the flags do
 not change: nothing is pushed or popped.
 
     PC = R
     R  = PC + 1         the next instruction
 
-    before:  R=a                PC = the EXC
-    after:   R=after the EXC    PC = a
+    before:  R=a                 PC = the EXEC
+    after:   R=after the EXEC    PC = a
 
-Uses: a call through an address (put the address into R, EXC; the routine comes
-back with RET or EXC), and coroutines: two routines that hand over to each other
-with EXC, each going on where it stopped.
+Uses: a call through an address (put the address into R, EXEC; the routine comes
+back with RET or EXEC), and coroutines: two routines that hand over to each other
+with EXEC, each going on where it stopped.
 
-| stage           | what EXC does |
+| stage           | what EXEC does |
 |-----------------|---------------|
 | 2 decode        | reads R on port A; passes the address of the next instruction (PC + 1) on port B as a constant (`d_b_use` = 0) |
 | 3 execute       | redirect fetch to operand A (always); `x_wen` = 1, `x_rd` = R (`100010`), `x_result` = operand B; no load or store |
@@ -1442,7 +1453,7 @@ with EXC, each going on where it stopped.
 
 The jump goes out from execute, as for RET, not from decode: R may still be on its
 way (written by an instruction just ahead), and only execute has it forwarded. So
-EXC costs 2 ticks (and the fill when the target is in another line); right after a
+EXEC costs 2 ticks (and the fill when the target is in another line); right after a
 load into R it waits a tick.
 
 ### MOVR (0x43)
@@ -1486,6 +1497,7 @@ bits are the select signal of the module that holds it:
 | 01001     | TMPH     | stage 3, `tmplh`              | bit 0 = 1 |
 | 01010     | ST       | stage 3, the flags (`flags.v`) | the status register: bits 3..0 = V N Z C |
 | 01011     | HLIM     | stage 3, `execute.v`          | the heap limit of CONS (see LISP) |
+| 01100     | VEC      | stage 3, `execute.v`          | the vector table (see Interrupts and exceptions); bits 9..0 are 0 |
 | others    | (free)   |                               | |
 
 So the full byte 1 of `MOVR T, PSP` is 0110 0100 = 0x64, of `MOVR PSP, T` 0010 0100
@@ -2002,6 +2014,144 @@ jumps if T >= r5 (unsigned), `CBR LT` if T < r5 (signed). Decode as SUBR, with t
 write (and for PC the jump) left out: the ALU's `SUB` when T comes first, `RSB` when
 the register does.
 
+## Interrupts and exceptions
+
+### The vector table and VEC
+
+INTR n and EXC n are calls through a **vector table** of 256 entries of 4 bytes:
+entry n is at **VEC + 4n**. Each entry is normally a jump to its handler (`B A,
+handler`, a CBR, 3 bytes, padded to 4; or a CBRL).
+
+**VEC** (special register 01100, selector 0x2C, in stage 3) holds the table's
+address. It is 1 KB aligned: bits 9..0 are always 0 (a write drops them), so the
+entry's address is VEC with 4n put into bits 9..0, no adder. After reset VEC is the
+start of the boot RAM, 0xF000_0000 (`VEC_RESET`, a parameter of `cpu.v`, the same
+as `RESET_PC`): entry 0 is the reset. A program moves the table with `MOVR VEC, T`
+(e.g. to a table in the SDRAM) and reads it with `MOVR T, VEC`.
+
+The numbers:
+
+| n       | what |
+|---------|------|
+| 0       | reset: the processor starts here; INTR 0 jumps here too |
+| 1       | exception: an undefined opcode |
+| 2, 3    | free for exceptions |
+| 4       | exception: CONS, the heap is full (L > HLIM) |
+| 5 .. 15 | free for exceptions |
+| 16 .. 47| interrupts from devices: 16 + the line of the interrupt controller (`../computer/iodec.v`: 16 the serial port, 17 the sound) |
+| 48 .. 255 | free: system calls (INTR n from a program) |
+
+### The interrupt flag I
+
+**I = 1**: interrupts from devices are on. Reset clears I. CLI clears it, SEI and
+RTI set it, and taking a device's interrupt clears it, so a handler is not
+interrupted unless it sets I again itself. ST shows I in bit 4 (read only).
+Software INTR, EXC and the exceptions do not change I.
+
+### INTR (0x49)
+
+    byte 0   0x49
+    byte 1   n: 0 .. 255
+
+A call through the vector table: push R onto the return stack, R = the return
+address, jump to VEC + 4n. S, T and the flags do not change.
+
+    the word at RSP = R, RSP = RSP - 4
+    R  = PC + 2         the next instruction (an INTR in the program)
+    PC = VEC + 4n
+
+From a program INTR is a system call: the handler returns with RET to the
+instruction after it.
+
+**A device's interrupt is an INTR too.** While a device asks (the processor's `irq`
+= 1, from the interrupt controller, with the vector in `irq_num`) and I = 1, fetch
+hands decode `INTR irq_num` instead of the next instruction from memory, without
+moving the PC. Its return address is that PC: the first instruction not done. All
+the older instructions are already in the pipeline and finish; none of the younger
+ones has been fetched. So the interrupt is **precise**: the handler returns with
+**RTI** and the program goes on as if nothing had happened.
+
+Such an INTR is checked again when it gets to execute, a few ticks later: in between
+an older instruction may have cleared I (CLI) or served the device, or another device
+with a lower line may have asked. It is taken only if irq is still 1, I is still 1 and
+irq_num is still its number; then it also clears I. If not, it does nothing at all
+and jumps back to its return address, where fetch goes on (and injects the right
+INTR, if one is still wanted).
+
+### EXC (0x4A)
+
+    byte 0   0x4A
+    byte 1   n: 0 .. 255
+
+An **exception**: as INTR, but the return address is the EXC's own address:
+
+    the word at RSP = R, RSP = RSP - 4
+    R  = PC             this instruction
+    PC = VEC + 4n
+
+So a RET from the handler runs the failing instruction again (after the handler has
+fixed what was wrong); a handler that wants to go on after it adds its length to R
+first.
+
+The processor raises exceptions itself, in the same way:
+
+- **An undefined opcode** (byte 0 not in the table above): decode lets it through as
+  a NOP and sends fetch back to it; fetch hands decode `EXC 1` there (before any
+  interrupt). R = the address of the undefined instruction. (A defined opcode whose
+  other bytes ask for something that does not exist, e.g. MOVR with a register
+  number that is free, still does nothing.)
+- **The heap is full** (CONS with L > HLIM): exception 4. Execute finds it (step 0
+  of CONS) and sends fetch back to the CONS with the exception; fetch hands decode
+  `EXC 4` there, as for an undefined opcode. R = the address of the CONS, which runs
+  again after the RET. See LISP.
+
+So the processor raises an exception in one way, wherever it finds it: a redirect
+back to the failing instruction with the exception's number (`redirect_exc`,
+`redirect_exc_n` from decode or execute), and fetch injects `EXC n` there. Only the
+EXC knows about the vector table.
+
+An exception is found before the instruction changes anything, so it is precise too.
+
+### CLI (0x34), SEI (0x35), RTI (0x36)
+
+    byte 0   0x34 / 0x35 / 0x36     no operands
+
+CLI: I = 0. SEI: I = 1. RTI: RET (PC = R, pop the return stack into R), and I = 1.
+
+A device can only interrupt after the instruction that sets I = 1; an INTR already on
+its way when CLI takes effect is turned down in execute, so nothing between CLI and
+SEI is interrupted.
+
+### A device's handler
+
+The handler must keep what it changes. The return address is in R (the old R on the
+return stack), S and T are the program's, and the flags must stay too, e.g. between a
+CMP and its CBR:
+
+    dev:    DUP                 ; keep T (and S)
+            MOVR    T, ST       ; the flags
+            PUSH                ; onto the return stack (R too)
+            ...                 ; serve the device (it stops asking); registers it uses
+                                ; must be its own, or saved
+            POP
+            MOVR    ST, T       ; the flags back (I stays 0)
+            DROP
+            RTI                 ; back, I = 1
+
+TMP needs no saving: nothing comes between the steps of ROT, DROT and CONS. TMPL and
+TMPH do, if the handler uses MULS or DIVS.
+
+| stage           | what INTR / EXC does |
+|-----------------|----------------------|
+| 1 fetch         | a device's INTR or an exception's EXC: made in `irq_sequence.v`, `f_inject` = 1, the PC does not move; after it fetch waits for the jump |
+| 2 decode        | 4n on port A as a constant; R on port B (the data of the push); the return address in `d_imm`; `d_vec` = 1, `d_hw` = 1 for a device's INTR |
+| 3 execute       | push R through `stackregs` (RSP), R = `d_imm` (`d_res` = 7); redirect to {VEC[31:10], 4n}. A device's INTR: the check (above), then I = 0; turned down: no push, no write, a jump to `d_imm` |
+| 4 memory access | the store of the push |
+| 5 writeback     | writes the return address into R |
+
+INTR and EXC cost 2 ticks and a store (and the fill of the handler's line, and the
+entry's jump). From a device asking to the INTR in execute: about 4 ticks.
+
 ## LISP
 
 The opcodes in this part make the processor suitable for LISP: lists, allocation and
@@ -2088,20 +2238,22 @@ comes out in T, tagged (its address + 1).
     before:  ... x a  S=car  T=cdr
     after:   ... x    S=a    T=cell      the word at cell - 1 = car, at cell + 3 = cdr
 
-**The trap.** When the heap is full (L > HLIM), CONS does not allocate: it calls the
-**GC vector** (`GC_VECTOR`, a parameter of `stage3/execute.v`, 0xF000_0010 by default:
-the second line of the boot RAM). As a call (JSR) it pushes R onto the return stack,
-but the address in R is **the CONS's own address**, not the next instruction's: the
+**The trap.** When the heap is full (L > HLIM), CONS does not allocate: it raises
+**exception 4** (see Interrupts and exceptions): `EXC 4` in its place, so entry 4 of
+the vector table (VEC + 16; 0xF000_0010 after reset) is called. As for every
+exception, R gets **the CONS's own address**, not the next instruction's: the
 handler collects garbage (or gets more memory: it raises HLIM, or sets L to a free
 area), then returns with RET, and the CONS runs again. S, T, the parameter stack and
 the flags are as they were before the CONS, so the car and the cdr in S and T are
 roots for the garbage collector. If the handler frees nothing, the CONS traps again:
 the handler must decide what "out of memory" does.
 
-    ; the boot RAM
-            CBR   A, start          ; $F000_0000: reset
-            .align 16
-    gc:     ...                     ; $F000_0010: CONS traps here
+    ; the vector table, in the boot RAM
+            B     A, start          ; $F000_0000: 0, reset
+            ...
+            B     A, gc             ; $F000_0010: 4, CONS traps here
+            ...
+    gc:     ...
             RET                     ; the CONS again
 
 CONS is issued as **four steps** by the sequencer (`stage2/sequencer.v`), each one
@@ -2109,18 +2261,17 @@ pass through the pipeline. Nothing can come between them, not even an interrupt.
 
 | step | what it does |
 |------|--------------|
-| 0    | the check: the ALU works out HLIM - L (`RSB`, L on operand A, HLIM on input b); its borrow is the trap. **Trap**: the word at RSP = R, RSP = RSP - 4, R = the CONS's address, jump to `GC_VECTOR`; the trap's jump throws away steps 1 .. 3. **No trap**: nothing (a bubble) |
+| 0    | the check: the ALU works out HLIM - L (`RSB`, L on operand A, HLIM on input b); its borrow is the trap. **Trap**: exception 4: a redirect back to the CONS (its address in `d_imm`) with `redirect_exc` = 1, `redirect_exc_n` = 4, which throws away steps 1 .. 3; fetch then injects EXC 4 at the CONS. **No trap**: nothing (a bubble) |
 | 1    | the word at L - 1 = S (L on operand A, -1 on input b through `d_imm`, S on operand B as the data) |
 | 2    | the word at L + 3 = T, T = L |
 | 3    | PSP = PSP + 4, S = the word at PSP (the pop, as NIP); L = L + 8 (the ALU, on the second write port W2) |
 
-Step 0 is built as a call (a push of R through `stackregs`, R written through `x_rd`),
-but execute lets its store, its register write and its `stackregs` op take effect
-only when it traps (`d_trap`; see `stage3/execute.v`). The return address is
-decode's PC of the CONS, passed in `d_imm` and put into R through `d_res` = 7.
+Step 0 writes nothing and stores nothing, trap or not (`d_trap`; see
+`stage3/execute.v`): the push of R and R = the CONS's address are the EXC's.
 
 A CONS that allocates takes 4 ticks and three memory accesses (two stores, a load);
-one that traps costs the 2 ticks of a taken jump and one store.
+one that traps costs the 2 ticks of the redirect back to it, then those of the EXC
+(2 ticks and a store) and the fill of the handler's line.
 
 ### TADD (0x32), TSUB (0x33)
 
@@ -2199,7 +2350,7 @@ Byte 1 is all mask (no opx bits).
 | `(rplaca c v)` | (v c) RPLACA |
 | `(+ a b)` on fixnums | TADD, CBR VS, slow |
 | `(consp x)`, type dispatch | TTAG 3, 1 / CBR EQ; a jump table: LIT8 3, AND, ... ADDR PC, T |
-| `(funcall f)`, a closure call | the code address in T: PUSH EXC (push R, R = T; then PC = R, R = the return address) |
+| `(funcall f)`, a closure call | the code address in T: PUSH EXEC (push R, R = T; then PC = R, R = the return address) |
 | a tail call | MOVR PC, T, or CBR A, f |
 | `(eq a b)` | CMP, CBR EQ |
 | `(null x)` | TTAG $FF, NIL (with NIL = 3) |
@@ -2215,7 +2366,7 @@ Forth words made of several opcodes. The return stack ends as it started.
 | R>   | ( -- a )  R: ( a -- ) | DUP POP |
 | n    | ( -- n )              | DUP LIT8 / LIT16 / LIT24 n |
 
-| (funcall) | ( f -- f )  R: ( -- ret ) | PUSH EXC (a call to the address in T) |
+| (funcall) | ( f -- f )  R: ( -- ret ) | PUSH EXEC (a call to the address in T) |
 | FOR .. NEXT | ( n -- )  the body n + 1 times | PUSH DROP ... NEXT R, body (the body in one line: ... UNEXT body) |
 
 ROT and -ROT are single opcodes now (ROT, DROT). Without them they would take 4

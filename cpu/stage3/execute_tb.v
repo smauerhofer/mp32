@@ -15,7 +15,7 @@
 // A random program of 20,000 instructions of the instruction set: the stack ops (DUP
 // .. DROT, ROT and DROT as their two steps), the ALU ops (ADD .. RORC, MUL, SMUL,
 // DIVS, MULS, CMP), LIT, MOVR and ADDR with the register file and with PSP, RSP, FP,
-// TMPL, TMPH and PC, and the jumps CBR (all conditions, TZ too), RET, EXC, MOVR PC, T,
+// TMPL, TMPH and PC, and the jumps CBR (all conditions, TZ too), RET, EXEC, MOVR PC, T,
 // ADDR PC, T. It starts by setting PSP and RSP. Decode follows the program in order,
 // not the jumps. Right after each jump comes a "shadow" instruction (a LIT, DUP, DROP,
 // SWAP, an ALU op or a MOVR): a taken jump must throw it away (flush), a jump not
@@ -95,7 +95,7 @@ module execute_tb;
     reg [5:0]  d_a_sel, d_b_sel;
     reg [31:0] d_a_const, d_b_const;
     reg [4:0]  d_alu_op;  reg [1:0] d_cin;  reg [3:0] d_fmask;
-    reg        d_a_tmpl, d_b_s3;  reg [2:0] d_s3;  reg [2:0] d_res;
+    reg        d_a_tmpl, d_b_s3;  reg [3:0] d_s3;  reg [2:0] d_res;
     reg        d_wen;  reg [5:0] d_rd;  reg d_x2_wen;  reg [1:0] d_x2_sel, d_x2;
     reg        d_load, d_store, d_signed, d_wdata, d_addr;  reg [1:0] d_size;
     reg [1:0]  d_sp_sel;  reg [2:0] d_sp_op;
@@ -243,6 +243,8 @@ module execute_tb;
         .d_b_imm(1'b0), .d_imm(32'h0),       // the immediate path: tested there too
         .d_th_y2(d_th_y2), .d_tl_shl(d_tl_shl), .d_tl_shr(d_tl_shr),
         .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(1'b0), .d_hl_we(1'b0), .d_loop(1'b0),
+        .d_vec(1'b0), .d_hw(1'b0), .d_ie(2'b00), .d_vec_we(1'b0),   // INTR, EXC, I, VEC: in stage2/decode_tb.v
+        .irq(1'b0), .irq_num(8'h0),                                  // and ../irq_tb.v
         .advance(advance),
         .mem_stall(mem_stall),
         .x_valid(x_valid), .x_load(x_load), .x_store(x_store), .x_size(x_size),
@@ -250,8 +252,9 @@ module execute_tb;
         .x_rd(x_rd), .x_result(x_result), .x2_wen(x2_wen), .x2_sel(x2_sel), .x2_data(x2_data),
         .w_en(w_en), .w_sel(w_sel), .w_data(w_data),
         .w2_en(w2_en), .w2_sel(w2_sel), .w2_data(w2_data),
-        .redirect(redirect), .redirect_pc(redirect_pc),
-        .flags_out(flags_out), .psp(psp), .rsp(rsp), .fp(fp), .tmpl(tmpl), .tmph(tmph), .hlim()
+        .redirect(redirect), .redirect_pc(redirect_pc), .redirect_exc(), .redirect_exc_n(),
+        .flags_out(flags_out), .psp(psp), .rsp(rsp), .fp(fp), .tmpl(tmpl), .tmph(tmph), .hlim(),
+        .vec(), .ie(), .ie_off()
     );
 
     // decode moves on when execute takes its instruction

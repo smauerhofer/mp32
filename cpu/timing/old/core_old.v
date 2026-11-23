@@ -41,6 +41,7 @@ module top #(
     fetch #(.RESET_PC(32'h0)) fe (
         .clk(clk), .reset(reset),
         .redirect(redirect), .redirect_pc(redirect_pc), .irq_pending(1'b0),
+        .redirect_exc(1'b0), .redirect_exc_n(8'h0), .irq_num(8'h0),
         .stall(stall), .f_valid(f_valid), .f_pc(f_pc), .f_instr(f_instr), .f_len(f_len),
         .f_inject(f_inject),
         .line_sel(line_sel), .line_addr(line_addr), .line_data(line_data),

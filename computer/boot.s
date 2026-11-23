@@ -7,9 +7,17 @@
 ; the bytes. A CR starts a new line on the screen; when the screen is full it starts
 ; at the top again, clearing each line as it gets there.
 ;
-; $F000_0000  reset: a jump to start
-; $F000_0010  the GC vector: CONS jumps here when the heap is full (L > HLIM). There is
-;             no garbage collector yet: it says so and stops.
+; $F000_0000  the vector table (VEC after reset): 48 entries of 4 bytes, a jump each.
+;             INTR n and EXC n go to $F000_0000 + 4n:
+;               0      reset: a jump to start
+;               1      an undefined opcode: says so and stops
+;               4      the heap is full (CONS, L > HLIM): there is no garbage
+;                      collector yet: says so and stops
+;               16     the serial port (line 0 of the interrupt controller)
+;               17     the sound (line 1)
+;               others nothing expects them: says so and stops
+;             Interrupts stay off (I = 0, and the controller's MASK is 0): the echo
+;             polls the serial port.
 ;
 ; The I/O (see computer/iodec.v):
 ;   $FFFF_0000  UART: +0 DATA (write: send; read: bit 8 = a byte came, bits 7..0 the byte)
@@ -30,14 +38,41 @@ HEAP_END = $780000
 SOUND    = -$FD00                       ; $FFFF_0300: the sound (../audio/audio.v)
 
         .code
-reset:  B       A, start                ; $F000_0000
+; ---------------------------------------------------------------- the vector table
+reset:  B       A, start                ; 0  $F000_0000: reset
+        .align  4
+        B       A, undefined            ; 1  an undefined opcode
+        .align  4
+        .rept   2
+        B       A, unexpected           ; 2, 3
+        .align  4
+        .endr
+        B       A, gc                   ; 4  $F000_0010: the heap is full
+        .align  4
+        .rept   11
+        B       A, unexpected           ; 5 .. 15
+        .align  4
+        .endr
+        B       A, unexpected           ; 16 the serial port (not used yet)
+        .align  4
+        B       A, unexpected           ; 17 the sound (not used yet)
+        .align  4
+        .rept   30
+        B       A, unexpected           ; 18 .. 47
+        .align  4
+        .endr
 
-        .align  16
-gc:     LEA     msg_full                ; $F000_0010: the heap is full
-        MOVR    r6, T
+; ---------------------------------------------------------------- the handlers
+gc:     LEA     msg_full                ; the heap is full
+        B       A, halt
+undefined:
+        LEA     msg_undefined
+        B       A, halt
+unexpected:
+        LEA     msg_unexpected
+halt:   MOVR    r6, T                   ; say so, and stop
         CALL    puts
-gc_halt:
-        B       A, gc_halt
+@stop:  B       A, @stop
 
 ; ---------------------------------------------------------------- the start
 start:  LEA     pstack_top              ; the stacks: in the block RAM (BSS)
@@ -174,6 +209,8 @@ cls_loop:
         .rodata
 banner:   .asciiz "mp32 ready\r\n"
 msg_full: .asciiz "\r\nheap full: no garbage collector yet\r\n"
+msg_undefined:  .asciiz "\r\nundefined opcode\r\n"
+msg_unexpected: .asciiz "\r\nunexpected interrupt or exception\r\n"
 
         .bss
 pstack:     .res 252

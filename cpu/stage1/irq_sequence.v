@@ -1,40 +1,22 @@
-// irq_sequence.v: the instructions stage 1 injects into stage 2 when it takes an
-// interrupt.
+// irq_sequence.v: the instruction stage 1 injects into stage 2 when it takes an
+// interrupt or an exception (see fetch.v).
 //
-//   A table of up to 16 instructions. index picks one; instr is its 4 bytes, in the
-//   same form as f_instr (first byte in bits 7..6 = the length, little-endian, unused
-//   bytes 0); last is 1 for the last instruction of the sequence.
+//   One instruction, 2 bytes, in the same form as f_instr (first byte in bits 7..0,
+//   the unused bytes 0):
+//     exc = 0:  INTR num   (0x49, num)   an interrupt from a device
+//     exc = 1:  EXC  num   (0x4A, num)   an exception (num: what failed)
 //
-//   The sequence must do two things, because stage 1 relies on them:
-//     - stop the interrupt from being pending (acknowledge it, or turn interrupts
-//       off) before its last instruction takes effect;
-//     - end with an instruction that redirects stage 1 (a jump to the handler).
-//       Until that redirect, stage 1 fetches nothing more.
-//   The injected instructions reach stage 2 with f_pc = the PC: the address of the
-//   first instruction not executed, where the program goes on after the interrupt.
+//   Both are calls through the vector table (VEC + 4 * num, see ../isa.md). Their return
+//   address is f_pc, the instruction that was not executed, so the program goes on with
+//   it after the handler (RTI for an interrupt, RET for an exception).
 //
-// ************************************************************************
-// PLACEHOLDERS. The instruction set is not defined yet, so these are three dummy
-// instructions of 1, 2 and 4 bytes. Replace them with the real sequence, e.g.:
-//     push the PC (f_pc), push the flags, interrupts off, jump to the vector.
-// ************************************************************************
+// (It was a table of up to 16 instructions when the interrupt sequence was still open;
+// the name stays so the Makefiles stay as they are.)
 
 module irq_sequence (
-    input  wire [3:0]  index,
-    output reg  [31:0] instr,
-    output reg         last
+    input  wire        exc,
+    input  wire [7:0]  num,
+    output wire [31:0] instr
 );
-    always @* begin
-        last  = 1'b0;
-        instr = 32'h0000_0000;
-        case (index)
-        4'd0: instr = 32'h0000_003E;            // 1 byte:  00 111110
-        4'd1: instr = 32'h0000_A57D;            // 2 bytes: 01 111101, A5
-        4'd2: begin                             // 4 bytes: 11 111111, 3 bytes
-                  instr = 32'h1234_56FF;
-                  last  = 1'b1;
-              end
-        default: last = 1'b1;                   // never used
-        endcase
-    end
+    assign instr = {16'h0, num, exc ? 8'h4A : 8'h49};
 endmodule

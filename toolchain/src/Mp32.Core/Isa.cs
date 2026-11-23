@@ -57,6 +57,12 @@ public static class Isa
     /// <summary>Address the processor starts at after reset (the mapped block RAM).</summary>
     public const uint ResetPc = 0xF000_0000;
 
+    /// <summary>
+    /// VEC after reset: the vector table, 256 entries of 4 bytes (INTR n, EXC n go to VEC + 4n).
+    /// Entry 0 is the reset, so it is at <see cref="ResetPc"/>.
+    /// </summary>
+    public const uint ResetVec = ResetPc;
+
     public static int LengthOf(byte opcode) => (opcode >> 6) + 1;
 
     public static readonly IReadOnlyList<Instruction> Instructions =
@@ -92,7 +98,7 @@ public static class Isa
         new("NEG",   0x1C, OperandForm.None, "T = 0 - T"),
         new("MULS",  0x1D, OperandForm.None, "one step of a 32 x 32 multiply"),
         new("CMP",   0x1E, OperandForm.None, "flags of S - T"),
-        new("EXC",   0x1F, OperandForm.None, "exchange R and PC"),
+        new("EXEC",  0x1F, OperandForm.None, "exchange R and PC"),
         new("ASL",   0x20, OperandForm.None, "arithmetic shift left"),
         new("ASR",   0x21, OperandForm.None, "arithmetic shift right"),
         new("LSL",   0x22, OperandForm.None, "logical shift left"),
@@ -113,6 +119,9 @@ public static class Isa
         new("CONS",  0x31, OperandForm.None, "( a d -- cell ): cell at L, L += 8; traps to the GC if L > HLIM"),
         new("TADD",  0x32, OperandForm.None, "( a b -- a+b ), V also if a tag is not 00 (fixnums)"),
         new("TSUB",  0x33, OperandForm.None, "( a b -- a-b ), V also if a tag is not 00 (fixnums)"),
+        new("CLI",   0x34, OperandForm.None, "I = 0: no interrupts"),
+        new("SEI",   0x35, OperandForm.None, "I = 1: interrupts on"),
+        new("RTI",   0x36, OperandForm.None, "return from an interrupt: RET, and I = 1"),
         new("LIT8",  0x40, OperandForm.Imm, "T = 8-bit signed constant"),
         new("UNEXT", 0x48, OperandForm.Local, "if R != 0: R = R - 1, jump within the line; else drop R (pop the return stack into R)"),
         new("CJMPL", 0x41, OperandForm.CondLocal, "conditional jump within the line"),
@@ -141,6 +150,8 @@ public static class Isa
         new("JSR",   0x82, OperandForm.Rel, "call, 16-bit offset"),
         new("ENTER2", 0x86, OperandForm.UImm, "ENTER with a 16-bit size (words)"),
         new("TTAG",  0x87, OperandForm.Tag, "Z = ((T & mask) == value); T unchanged"),
+        new("INTR",  0x49, OperandForm.UImm, "interrupt n (0..255): push R, R = the next instruction, PC = VEC + 4n"),
+        new("EXC",   0x4A, OperandForm.UImm, "exception n (0..255): push R, R = this instruction, PC = VEC + 4n"),
         new("NEXT2", 0x88, OperandForm.RegRel, "if reg != 0: reg = reg - 1, branch (8-bit offset); else for R drop R"),
         new("LDR",   0x84, OperandForm.Mem, "load a word: reg = mem32[addr]"),
         new("LDRH",  0x84, OperandForm.Mem, "load a halfword, zero-extended"),
@@ -211,7 +222,7 @@ public static class Isa
         {
             ["T"] = 0x00, ["S"] = 0x01, ["R"] = 0x02, ["L"] = 0x03,
             ["PSP"] = 0x04, ["RSP"] = 0x05, ["FP"] = 0x06, ["PC"] = 0x07,
-            ["TMPL"] = 0x08, ["TMPH"] = 0x09, ["ST"] = 0x0A, ["HLIM"] = 0x0B,
+            ["TMPL"] = 0x08, ["TMPH"] = 0x09, ["ST"] = 0x0A, ["HLIM"] = 0x0B, ["VEC"] = 0x0C,
         };
 
     /// <summary>The 6-bit selector of T as MOVR / ADDR .. CMPR name it.</summary>
@@ -236,11 +247,11 @@ public static class Isa
     }
 
     /// <summary>
-    /// True for the registers of stage 3 (PSP, RSP, FP, TMPL, TMPH, ST, HLIM): they reach the ALU
-    /// only on one input, so ADD2 .. CMP2 can name at most one of them.
+    /// True for the registers of stage 3 (PSP, RSP, FP, TMPL, TMPH, ST, HLIM, VEC, VEC): they reach the
+    /// ALU only on one input, so ADD2 .. CMP2 can name at most one of them.
     /// </summary>
     public static bool IsStage3(int selector) =>
-        (selector & 0x20) != 0 && (selector & 0x1F) is 0x04 or 0x05 or 0x06 or 0x08 or 0x09 or 0x0A or 0x0B;
+        (selector & 0x20) != 0 && (selector & 0x1F) is 0x04 or 0x05 or 0x06 or 0x08 or 0x09 or 0x0A or 0x0B or 0x0C;
 
     public static string RegisterName(int selector)
     {

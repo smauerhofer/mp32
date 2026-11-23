@@ -141,9 +141,12 @@ module forward (
 
     // ================================================================ in execute
     // youngest first (a load in stage 4 has no value yet: load_use waits for it)
-    assign e_a = a_fxr ? x_result : a_fx2 ? x2_data :
+    // a_fxr, b_fxr were worked out from e_wen; execute can still drop that write (the
+    // end of UNEXT / NEXT2 / NEXT3, a CONS that does not trap, a refused INTR): then
+    // x_wen is 0 and the operand is what it was before (an older write, or the register)
+    assign e_a = (a_fxr & x_wen) ? x_result : a_fx2 ? x2_data :
                  a_fw ? w_data : a_fw2 ? w2_data : a_val;
-    assign e_b = b_fxr ? x_result : b_fx2 ? x2_data :
+    assign e_b = (b_fxr & x_wen) ? x_result : b_fx2 ? x2_data :
                  b_fw ? w_data : b_fw2 ? w2_data : b_val;
 
     assign load_use = e_valid & x_load & (a_fx | b_fx);

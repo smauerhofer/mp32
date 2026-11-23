@@ -1,6 +1,6 @@
 // cpu.v: the mp32 processor: the five stages of its pipeline, wired together.
 //
-//   stage1/fetch.v      fetch          (with pc.v and irq_sequence.v)
+//   stage1/fetch.v      fetch          (with pc.v and irq_sequence.v: INTR / EXC)
 //   stage2/decode.v     decode         (with decoder.v, regfile.v, sequencer.v)
 //   stage3/execute.v    execute        (with forward.v, alu.v, mul.v, flags.v, cond.v,
 //                                       stackregs.v, scratch.v, tmplh.v)
@@ -13,20 +13,24 @@
 //   line_*   fetch reads 16-byte lines of code
 //   data_*   memory access reads and writes bytes, halfwords and words (memsys's d_*)
 //
-// and the interrupt request (irq_pending: see stage1/fetch.v; the interrupt sequence
-// is still a placeholder, so keep it 0). The registers T, S, R, L, PSP, RSP, FP and
-// the flags come out to be looked at (by a test bench, or LEDs).
+// and the interrupt request: irq = 1 while a device wants an interrupt, irq_num its
+// number (the interrupt controller, ../computer/irqc.v). While irq is 1 and the I flag
+// is 1, fetch injects INTR irq_num (stage1/fetch.v); execute checks again that it is
+// still wanted when the INTR gets there (stage3/execute.v). The registers T, S, R, L,
+// PSP, RSP, FP and the flags come out to be looked at (by a test bench, or LEDs).
 //
 // The parameters: RESET_PC, where it starts (the block RAM, with the boot program),
-// and GC_VECTOR, where CONS traps to when the heap is full (see isa.md, LISP).
+// and VEC_RESET, VEC after reset: the vector table (INTR 0, the reset, is its first
+// entry, so the two are the same). CONS traps to VEC + 16 (exception 4).
 
 module cpu #(
     parameter [31:0] RESET_PC  = 32'hF000_0000,
-    parameter [31:0] GC_VECTOR = 32'hF000_0010
+    parameter [31:0] VEC_RESET = RESET_PC
 ) (
     input  wire         clk,
     input  wire         reset,          // synchronous, active high
-    input  wire         irq_pending,
+    input  wire         irq,            // a device wants an interrupt
+    input  wire [7:0]   irq_num,        // its number (the vector)
 
     // ---- fetch: lines of code
     output wire         line_sel,
@@ -52,19 +56,34 @@ module cpu #(
     output wire [31:0]  psp,
     output wire [31:0]  rsp,
     output wire [31:0]  fp,
-    output wire [3:0]   flags           // {V, N, Z, C}
+    output wire [3:0]   flags,          // {V, N, Z, C}
+    output wire         ie              // the I flag: interrupts on
 );
+    // ---------------------------------------------------------------- the request
+    // to fetch through a register: irq and I (not while an instruction that may clear
+    // I is in execute: ie_off), and the number
+    wire         ie_off;
+    reg          irq_pending;
+    reg  [7:0]   irq_pnum;
+    always @(posedge clk) begin
+        irq_pending <= !reset & irq & ie & !ie_off;
+        irq_pnum    <= irq_num;
+    end
+
     // ---------------------------------------------------------------- stage 1
     wire         f_valid, f_inject;
     wire [31:0]  f_pc, f_instr, f_next_instr;
     wire         f_load;
     wire [2:0]   f_len;
-    wire         stall, redirect;
+    wire         stall, redirect, redirect_exc;
     wire [31:0]  redirect_pc;
+    wire [7:0]   redirect_exc_n;
 
     fetch #(.RESET_PC(RESET_PC)) fe (
         .clk(clk), .reset(reset),
-        .redirect(redirect), .redirect_pc(redirect_pc), .irq_pending(irq_pending),
+        .redirect(redirect), .redirect_pc(redirect_pc),
+        .redirect_exc(redirect_exc), .redirect_exc_n(redirect_exc_n),
+        .irq_pending(irq_pending), .irq_num(irq_pnum),
         .stall(stall), .f_valid(f_valid), .f_pc(f_pc), .f_instr(f_instr), .f_len(f_len),
         .f_inject(f_inject), .f_next_instr(f_next_instr), .f_load(f_load),
         .line_sel(line_sel), .line_addr(line_addr), .line_data(line_data),
@@ -75,6 +94,8 @@ module cpu #(
     // ---------------------------------------------------------------- stage 2
     wire        advance, ex_redirect;
     wire [31:0] ex_redirect_pc;
+    wire        ex_redirect_exc;
+    wire [7:0]  ex_redirect_exc_n;
     wire        w_en, w2_en;
     wire [5:0]  w_sel;
     wire [1:0]  w2_sel;
@@ -84,7 +105,7 @@ module cpu #(
     wire [5:0]  d_a_sel, d_b_sel, d_rd;
     wire [31:0] d_a_data, d_b_data;
     wire [4:0]  d_alu_op;  wire [1:0] d_cin;  wire [3:0] d_fmask;
-    wire        d_a_tmpl, d_b_s3;  wire [2:0] d_s3;  wire [2:0] d_res;
+    wire        d_a_tmpl, d_b_s3;  wire [3:0] d_s3;  wire [2:0] d_res;
     wire        d_b_imm;  wire [31:0] d_imm;
     wire        d_wen, d_x2_wen;  wire [1:0] d_x2_sel, d_x2;
     wire        d_load, d_store, d_signed, d_wdata, d_addr;  wire [1:0] d_size;
@@ -92,13 +113,17 @@ module cpu #(
     wire        d_tmp_we, d_tmp_src, d_tl_we, d_th_we, d_th_y2, d_tl_shl, d_tl_shr, d_st_we;
     wire        d_jump, d_tgt;  wire [3:0] d_cond;
     wire        d_trap, d_hl_we, d_loop;
+    wire        d_vec, d_hw, d_vec_we;  wire [1:0] d_ie;
 
     decode dec (
         .clk(clk), .reset(reset),
         .f_valid(f_valid), .f_pc(f_pc), .f_instr(f_instr), .f_len(f_len), .stall(stall),
+        .f_inject(f_inject),
         .f_next_instr(f_next_instr), .f_load(f_load),
         .advance(advance), .ex_redirect(ex_redirect), .ex_redirect_pc(ex_redirect_pc),
+        .ex_redirect_exc(ex_redirect_exc), .ex_redirect_exc_n(ex_redirect_exc_n),
         .redirect(redirect), .redirect_pc(redirect_pc),
+        .redirect_exc(redirect_exc), .redirect_exc_n(redirect_exc_n),
         .w_en(w_en), .w_sel(w_sel), .w_data(w_data),
         .w2_en(w2_en), .w2_sel(w2_sel), .w2_data(w2_data),
         .d_valid(d_valid), .d_a_use(d_a_use), .d_a_sel(d_a_sel), .d_a_data(d_a_data),
@@ -111,6 +136,7 @@ module cpu #(
         .d_tmp_we(d_tmp_we), .d_tmp_src(d_tmp_src), .d_tl_we(d_tl_we), .d_th_we(d_th_we),
         .d_th_y2(d_th_y2), .d_tl_shl(d_tl_shl), .d_tl_shr(d_tl_shr), .d_st_we(d_st_we),
         .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(d_trap), .d_hl_we(d_hl_we), .d_loop(d_loop),
+        .d_vec(d_vec), .d_hw(d_hw), .d_ie(d_ie), .d_vec_we(d_vec_we),
         .t(t), .s(s), .r(r), .l(l)
     );
 
@@ -121,7 +147,7 @@ module cpu #(
     wire [31:0] x_addr, x_wdata, x_result, x2_data;
     wire [5:0]  x_rd;
 
-    execute #(.GC_VECTOR(GC_VECTOR)) ex (
+    execute #(.VEC_RESET(VEC_RESET)) ex (
         .clk(clk), .reset(reset),
         .d_valid(d_valid), .d_a_use(d_a_use), .d_a_sel(d_a_sel), .d_a_data(d_a_data),
         .d_b_use(d_b_use), .d_b_sel(d_b_sel), .d_b_data(d_b_data),
@@ -133,6 +159,8 @@ module cpu #(
         .d_tmp_we(d_tmp_we), .d_tmp_src(d_tmp_src), .d_tl_we(d_tl_we), .d_th_we(d_th_we),
         .d_th_y2(d_th_y2), .d_tl_shl(d_tl_shl), .d_tl_shr(d_tl_shr), .d_st_we(d_st_we),
         .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(d_trap), .d_hl_we(d_hl_we), .d_loop(d_loop),
+        .d_vec(d_vec), .d_hw(d_hw), .d_ie(d_ie), .d_vec_we(d_vec_we),
+        .irq(irq), .irq_num(irq_num),
         .advance(advance), .mem_stall(mem_stall),
         .x_valid(x_valid), .x_load(x_load), .x_store(x_store), .x_size(x_size),
         .x_signed(x_signed), .x_addr(x_addr), .x_wdata(x_wdata), .x_wen(x_wen),
@@ -140,7 +168,9 @@ module cpu #(
         .w_en(w_en), .w_sel(w_sel), .w_data(w_data),
         .w2_en(w2_en), .w2_sel(w2_sel), .w2_data(w2_data),
         .redirect(ex_redirect), .redirect_pc(ex_redirect_pc),
-        .flags_out(flags), .psp(psp), .rsp(rsp), .fp(fp), .tmpl(), .tmph(), .hlim()
+        .redirect_exc(ex_redirect_exc), .redirect_exc_n(ex_redirect_exc_n),
+        .flags_out(flags), .psp(psp), .rsp(rsp), .fp(fp), .tmpl(), .tmph(), .hlim(),
+        .vec(), .ie(ie), .ie_off(ie_off)
     );
 
     // ---------------------------------------------------------------- stage 4

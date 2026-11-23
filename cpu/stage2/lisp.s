@@ -4,7 +4,8 @@
 ; lisp.hex holds its CODE bytes from address 0, one per line, padded to 1 KB: the bytes
 ; of the listing of
 ;   mp32as -o build/lisp.o -l build/lisp.lst lisp.s
-; (the GC handler at $100 is the GC_VECTOR lisp_tb.v gives execute).
+; The vector table is at 0 (VEC: lisp_tb.v gives execute VEC_RESET = 0): at 0 the
+; reset (a jump to start), at $10 (VEC + 16, exception 4) the GC handler.
 ;
 ; What lisp_tb.v checks at the end:
 ;   r2 = 24   the sum of (1 2 3) as a fixnum (6 * 4)
@@ -16,6 +17,20 @@
 ;   r9 = 1    the heap limit was passed: HLIM was raised by the handler
 
 NIL = 3
+
+        CBR     A, start        ; $0: vector 0, the reset
+        .align  16
+
+; ---- the GC handler ($10: exception 4, the trap of CONS): the CONS that trapped comes
+; back with RET. It must keep T and S (the car and the cdr of the CONS). It raises HLIM
+; to $1F9 (cells up to $1F8).
+gc:     INCR    r7
+        MOVI2   r1, $7E
+        ADD2    r1, r1          ; $FC
+        ADD2    r1, r1          ; $1F8
+        INCR    r1              ; $1F9
+        MOV2    HLIM, r1
+        RET
 
 start:
         LIT16   $200
@@ -94,14 +109,3 @@ end:    CBR     A, end
 
 bad:    MOVI2   r2, -1
         CBR     A, end
-
-; ---- the GC handler: the CONS that trapped comes back with RET. It must keep T and S
-; (the car and the cdr of the CONS). It raises HLIM to $1F9 (cells up to $1F8).
-        .align  256
-gc:     INCR    r7
-        MOVI2   r1, $7E
-        ADD2    r1, r1          ; $FC
-        ADD2    r1, r1          ; $1F8
-        INCR    r1              ; $1F9
-        MOV2    HLIM, r1
-        RET

@@ -35,8 +35,16 @@
 // of the instruction in f_*.
 //
 // ---------------------------------------------------------------- unknown opcodes
-// Opcodes that are not defined (and MOVR / ADDR .. CMPR with a register number that
-// does not exist) do nothing: they go through as a NOP.
+// An opcode that is not defined (byte 0) goes through as a NOP, and decode redirects
+// fetch back to it with an exception (redirect_exc): fetch injects EXC 1 there, so the
+// program goes to the handler at VEC + 4 with R = the undefined instruction's address.
+// A defined opcode with bits in its other bytes that mean nothing (MOVR with a register
+// that does not exist, ...) still does nothing.
+//
+// ---------------------------------------------------------------- INTR, EXC
+// Fetch hands decode INTR n (a device's interrupt) or EXC n (an exception) with
+// f_inject = 1; their return address is then f_pc. d_hw tells execute an INTR came
+// from a device, so it checks the interrupt is still wanted before it takes it.
 //
 // ---------------------------------------------------------------- LISP
 // The low 2 bits of a LISP value are its tag: 00 fixnum, 01 cons, 10 other object,
@@ -44,7 +52,9 @@
 // - 1, its cdr at + 3. L is the allocation pointer: the tagged address of the next
 // free cell. CAR, CDR, RPLACA, RPLACD go through the address path of LDR3 / STR3;
 // CONS is four steps: 0 the check against HLIM (a trap to the GC vector, d_trap),
-// 1 the car, 2 the cdr and T = L, 3 the pop into S and L = L + 8.
+// 1 the car, 2 the cdr and T = L, 3 the pop into S and L = L + 8. When step 0 finds
+// the heap full, execute raises exception 4 (redirect back to the CONS, with
+// ex_redirect_exc): fetch injects EXC 4 there.
 
 module decode (
     input  wire        clk,
@@ -55,6 +65,7 @@ module decode (
     input  wire [31:0] f_pc,
     input  wire [31:0] f_instr,
     input  wire [2:0]  f_len,
+    input  wire        f_inject,       // f_* is an INTR / EXC from fetch, not from memory
     input  wire [31:0] f_next_instr,   // what f_instr becomes at the next edge, if f_load
     input  wire        f_load,         // fetch loads f_* at the next edge
     output wire        stall,          // to fetch: keep f_*
@@ -63,10 +74,14 @@ module decode (
     input  wire        advance,        // execute takes the instruction at this edge
     input  wire        ex_redirect,    // a jump taken in execute
     input  wire [31:0] ex_redirect_pc,
+    input  wire        ex_redirect_exc,   // with it: an exception (CONS: 4)
+    input  wire [7:0]  ex_redirect_exc_n,
 
-    // ---- to fetch: a jump (from execute, or a call from here)
+    // ---- to fetch: a jump (from execute, or a call or an exception from here)
     output wire        redirect,
     output wire [31:0] redirect_pc,
+    output wire        redirect_exc,   // with redirect: inject EXC redirect_exc_n there
+    output wire [7:0]  redirect_exc_n,
 
     // ---- from writeback: the register file's write ports
     input  wire        w_en,
@@ -93,7 +108,7 @@ module decode (
     output wire        d_b_s3,
     output wire        d_b_imm,
     output wire [31:0] d_imm,
-    output wire [2:0]  d_s3,
+    output wire [3:0]  d_s3,
     output wire [2:0]  d_res,
     output wire        d_wen,
     output wire [5:0]  d_rd,
@@ -122,6 +137,10 @@ module decode (
     output wire        d_trap,         // CONS step 0: trap unless L <= HLIM
     output wire        d_hl_we,        // HLIM = r
     output wire        d_loop,         // UNEXT, NEXT2, NEXT3
+    output wire        d_vec,          // INTR, EXC: a call through the vector table
+    output wire        d_hw,           // an INTR from fetch (checked again in execute)
+    output wire [1:0]  d_ie,           // the I flag: 01 = 0 (CLI), 10 = 1 (SEI, RTI)
+    output wire        d_vec_we,       // VEC = r
 
     // ---- the special registers, to look at
     output wire [31:0] t,
@@ -146,9 +165,10 @@ module decode (
     wire        call;
     wire        now_a_use, now_b_use;
     wire [5:0]  now_a_sel, now_b_sel;
+    wire        undef;
 
     decoder now (
-        .f_pc(f_pc), .f_instr(f_instr), .f_len(f_len), .d_step(d_step),
+        .f_pc(f_pc), .f_instr(f_instr), .f_len(f_len), .d_step(d_step), .f_inject(f_inject),
         .a_const(a_const), .b_const(b_const), .call(call), .target(target),
         .d_a_use(now_a_use), .d_a_sel(now_a_sel), .d_b_use(now_b_use), .d_b_sel(now_b_sel),
         .d_alu_op(d_alu_op), .d_cin(d_cin), .d_fmask(d_fmask), .d_a_tmpl(d_a_tmpl),
@@ -158,7 +178,8 @@ module decode (
         .d_wdata(d_wdata), .d_addr(d_addr), .d_sp_sel(d_sp_sel), .d_sp_op(d_sp_op),
         .d_tmp_we(d_tmp_we), .d_tmp_src(d_tmp_src), .d_tl_we(d_tl_we), .d_th_we(d_th_we),
         .d_th_y2(d_th_y2), .d_tl_shl(d_tl_shl), .d_tl_shr(d_tl_shr), .d_st_we(d_st_we),
-        .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(d_trap), .d_hl_we(d_hl_we), .d_loop(d_loop)
+        .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(d_trap), .d_hl_we(d_hl_we), .d_loop(d_loop),
+        .d_vec(d_vec), .d_hw(d_hw), .d_ie(d_ie), .d_vec_we(d_vec_we), .d_undef(undef)
     );
 
     // ================================================================ the pre-decode
@@ -171,7 +192,7 @@ module decode (
     wire [5:0]  l_a_sel, l_b_sel, s_a_sel, s_b_sel;
 
     decoder next_instr (                                   // the new instruction, step 0
-        .f_pc(32'h0), .f_instr(f_next_instr), .f_len(3'd0), .d_step(2'd0),
+        .f_pc(32'h0), .f_instr(f_next_instr), .f_len(3'd0), .d_step(2'd0), .f_inject(1'b0),
         .a_const(), .b_const(), .call(), .target(),
         .d_a_use(l_a_use), .d_a_sel(l_a_sel), .d_b_use(l_b_use), .d_b_sel(l_b_sel),
         .d_alu_op(), .d_cin(), .d_fmask(), .d_a_tmpl(), .d_b_s3(), .d_b_imm(), .d_imm(),
@@ -179,11 +200,11 @@ module decode (
         .d_load(), .d_store(), .d_size(), .d_signed(), .d_wdata(), .d_addr(),
         .d_sp_sel(), .d_sp_op(), .d_tmp_we(), .d_tmp_src(), .d_tl_we(), .d_th_we(),
         .d_th_y2(), .d_tl_shl(), .d_tl_shr(), .d_st_we(), .d_jump(), .d_cond(), .d_tgt(),
-        .d_trap(), .d_hl_we(), .d_loop()
+        .d_trap(), .d_hl_we(), .d_loop(), .d_vec(), .d_hw(), .d_ie(), .d_vec_we(), .d_undef()
     );
 
     decoder next_step (                                    // this instruction, the next step
-        .f_pc(32'h0), .f_instr(f_instr), .f_len(3'd0), .d_step(d_step + 2'd1),
+        .f_pc(32'h0), .f_instr(f_instr), .f_len(3'd0), .d_step(d_step + 2'd1), .f_inject(1'b0),
         .a_const(), .b_const(), .call(), .target(),
         .d_a_use(s_a_use), .d_a_sel(s_a_sel), .d_b_use(s_b_use), .d_b_sel(s_b_sel),
         .d_alu_op(), .d_cin(), .d_fmask(), .d_a_tmpl(), .d_b_s3(), .d_b_imm(), .d_imm(),
@@ -191,7 +212,7 @@ module decode (
         .d_load(), .d_store(), .d_size(), .d_signed(), .d_wdata(), .d_addr(),
         .d_sp_sel(), .d_sp_op(), .d_tmp_we(), .d_tmp_src(), .d_tl_we(), .d_th_we(),
         .d_th_y2(), .d_tl_shl(), .d_tl_shr(), .d_st_we(), .d_jump(), .d_cond(), .d_tgt(),
-        .d_trap(), .d_hl_we(), .d_loop()
+        .d_trap(), .d_hl_we(), .d_loop(), .d_vec(), .d_hw(), .d_ie(), .d_vec_we(), .d_undef()
     );
 
     always @(posedge clk)
@@ -237,6 +258,12 @@ module decode (
     // and execute throws the call away, so the result would be the same without it.)
     wire call_go = f_valid & call & advance & !ex_redirect;
 
-    assign redirect    = ex_redirect | call_go;
-    assign redirect_pc = ex_redirect ? ex_redirect_pc : target;
+    // an undefined opcode: it goes on into execute as a NOP, and fetch is sent back to
+    // it with an exception: it injects EXC 1 there (f_pc = the undefined instruction).
+    wire exc_go  = f_valid & undef & advance & !ex_redirect;
+
+    assign redirect       = ex_redirect | call_go | exc_go;
+    assign redirect_pc    = ex_redirect ? ex_redirect_pc : exc_go ? f_pc : target;
+    assign redirect_exc   = ex_redirect ? ex_redirect_exc : exc_go;
+    assign redirect_exc_n = ex_redirect ? ex_redirect_exc_n : 8'd1;
 endmodule

@@ -43,16 +43,24 @@ The block RAM's base and size are parameters of `stage4/membus.v`.
 - The flags C (carry), Z (zero), N (negative), V (overflow), in stage 3 next to the
   ALU (`stage3/flags.v`).
 - **ST**, the status register (selector 0x2A), in stage 3: the four flags in its low
-  bits, bit 0 C, bit 1 Z, bit 2 N, bit 3 V; bits 31..4 read as 0. A write to ST sets
-  all four flags from bits 3..0 (bits 31..4 are dropped) and wins over the flags the
+  bits, bit 0 C, bit 1 Z, bit 2 N, bit 3 V; bit 4 the interrupt flag I (read only);
+  bits 31..5 read as 0. A write to ST sets
+  all four flags from bits 3..0 (the bits above are dropped, I stays) and wins over the flags the
   same instruction's ALU op sets: `ADDR ST, T` makes ST = ST + T. It is read
   through `d_s3` = 3 and written with `d_st_we` (`stage3/execute.v`). Like the other
-  registers of stage 3 it comes into the ALU on input b only. *(Bits 31..4 free for
+  registers of stage 3 it comes into the ALU on input b only. *(Bits 31..5 free for
   more status bits.)*
 - **HLIM**, the heap limit (selector 0x2B), 32 bits, in stage 3 (`stage3/execute.v`):
-  the largest L at which CONS allocates; when L > HLIM, CONS traps to the GC vector.
+  the largest L at which CONS allocates; when L > HLIM, CONS raises exception 4.
   Reset clears it (so CONS traps until a heap is set up). Like the other registers of
   stage 3 it comes into the ALU on input b only (`d_s3` = 7).
+- **VEC**, the vector table (selector 0x2C), in stage 3 (`stage3/execute.v`): INTR n
+  and EXC n jump to VEC + 4n. Bits 9..0 are always 0 (1 KB aligned), so the entry's
+  address is {VEC[31:10], 4n}, no adder. Reset sets it to `VEC_RESET` (= `RESET_PC`,
+  0xF000_0000). Read through `d_s3` = 8, written with `d_vec_we`.
+- **I**, the interrupt flag, in stage 3: devices may interrupt while it is 1. Reset
+  and CLI clear it, SEI and RTI set it, a device's INTR taken clears it (`d_ie`,
+  `d_hw`). ST shows it in bit 4. See isa.md, Interrupts and exceptions.
 - TMPL and TMPH, 32 bits each (temp lo / temp hi), in stage 3 next to the ALU
   (`stage3/tmplh.v`): the 64-bit value {TMPH, TMPL} for the ALU's 64-bit shifts.
   Read and written by special opcodes.
@@ -96,7 +104,7 @@ The block RAM's base and size are parameters of `stage4/membus.v`.
 | 5     | writeback        | `stage5` | done, tested |
 
 - **Fetch:** reads lines into the instruction buffer, keeps the PC, hands decode one
-  instruction per tick (or the interrupt sequence).
+  instruction per tick (or an INTR / EXC it makes itself: an interrupt, an exception).
 - **Decode:** splits the instruction into its fields and reads the registers. Most
   instructions are one pass through the pipeline; ROT and DROT are issued as two
   steps, CONS as four, by the sequencer (`stage2/sequencer.v`). It holds the register file and T,
@@ -132,16 +140,18 @@ The block RAM's base and size are parameters of `stage4/membus.v`.
 - The PC register: at each edge it is reset, loaded (redirect) or stepped by the
   length of the instruction just fetched; load wins over step. `pc` is an output of
   the fetch stage.
-- The PC is increased for the next instruction unless an interrupt is pending or
-  being taken.
-- **Interrupts:** when `irq_pending` is 1, stage 1 injects the interrupt sequence
-  (`stage1/irq_sequence.v`, up to 16 instructions) into stage 2, one per tick, with
-  `f_inject` = 1 and `f_pc` = the PC, without changing the PC. Then it fetches nothing
-  until a redirect. The sequence must acknowledge the interrupt (or turn interrupts
-  off) and end with a jump to the handler. A redirect from an older instruction in
-  the middle of a sequence throws it away; if the interrupt is still pending the
-  sequence starts again at the new PC. *The sequence itself is a placeholder until
-  the instruction set is defined.*
+- The PC is increased for the next instruction unless an interrupt or exception is
+  being injected.
+- **Interrupts:** when `irq_pending` is 1 (cpu.v: the device's `irq` and I, through a
+  register, not while a device's INTR or CLI is in execute: `ie_off`), stage 1 hands
+  stage 2 `INTR irq_num` (`stage1/irq_sequence.v`) instead of the next instruction,
+  with `f_inject` = 1 and `f_pc` = the PC, without changing the PC. Then it fetches
+  nothing until a redirect: INTR always jumps (to its vector, or back to `f_pc` when
+  execute turns it down). A redirect from an older instruction throws the INTR away;
+  if the interrupt is still pending it is injected again at the new PC.
+- **Exceptions:** a redirect with `redirect_exc` = 1 (decode, for an undefined opcode:
+  to the opcode's own address) makes the next instruction into `f_*` `EXC
+  redirect_exc_n` (before any interrupt), with `f_pc` = the failing instruction.
 - Loads a whole cache line into a 16-byte instruction buffer (IB).
 - Gives decode `f_pc`, `f_instr` (4 bytes from the PC, 0 past the end of the line)
   and `f_len`, one instruction per tick while the PC stays in the IB's line.
@@ -220,20 +230,27 @@ control word of execute (see execute.v).
 - **LISP (0x2C .. 0x33, 0x47, 0x87):** CAR, CDR load into T from T - 1, T + 3 (the
   address through the ALU, as LDR3); RPLACA, RPLACD store S there (the offset on
   `d_imm`, as STR3). CONS is four steps (`d_step` 0 .. 3): 0 the check, L on A, HLIM
-  on b (`d_s3` = 7), ALU `RSB`, with `d_trap` and a push of R / R = the CONS's PC
-  (`d_imm`, `d_res` = 7) that execute only lets happen when it traps; 1, 2 the stores
+  on b (`d_s3` = 7), ALU `RSB`, with `d_trap` and the CONS's PC in `d_imm` (where
+  execute sends fetch back with exception 4 when it traps); 1, 2 the stores
   of S and T at L - 1, L + 3 (and T = L); 3 the pop into S and L = L + 8 on W2. TADD,
   TSUB are ADD, SUB with ALU ops `TADD`, `TSUB`. LSLI .. RORI (0x47): byte 1 bits 7..5
   the ALU's LSL, LSR, ASR, ROL, ROR, the count (4..0) on operand B. TTAG (0x87):
   {mask, value} on operand B, ALU `TTAG`, flags mask Z.
-- Opcodes that are not defined, and MOVR / ADDR .. CMPR with a register that does not
-  exist or byte 1 bit 7 set, do nothing (a NOP).
+- An opcode that is not defined (byte 0) goes on as a NOP, and decode redirects
+  fetch back to it with an exception (`redirect_exc`, `redirect_exc_n` = 1): fetch
+  injects EXC 1 there. MOVR / ADDR .. CMPR with a register that does not exist or
+  byte 1 bit 7 set still do nothing (a NOP).
+- INTR (0x49), EXC (0x4A): 4n on port A (a constant), R on port B (the push's data),
+  the return address in `d_imm` (`d_res` = 7): the next instruction for INTR from
+  memory, `f_pc` for EXC and for an injected INTR; `d_vec` = 1, `d_hw` = 1 for an
+  injected INTR. CLI, SEI (0x34, 0x35): `d_ie`; RTI (0x36): RET with `d_ie` = set.
 - Size: about 1,170 LUTs, 130 flip-flops and 16 RAM16SDP4 (r0 .. r31 with two read
   ports) (`make size` in `stage2`).
 
 Test: `stage2/decode_tb.v`: the whole pipeline (fetch, decode, execute, memory
 access, writeback) on 64 KB of random machine code (every defined opcode, random
-operands, some undefined opcodes; the code keeps the line rule), with a code memory
+operands, some undefined opcodes, which raise exception 1: a handler skips them;
+the code keeps the line rule), with a code memory
 of 1 .. 8 ticks and a data memory of 1 .. 4 ticks. A byte-level reference runs the
 same code from PC 0, following every jump, for 40,000 instructions; every register
 write, every store and every jump of the pipeline must be the reference's, in
@@ -247,7 +264,7 @@ order.
 - The instruction stays in fetch's `f_*` for all its steps: the sequencer holds fetch
   with `stall` while the steps before the last go out (and whenever stage 3 does not
   take an instruction, `hold`).
-- **No interrupt between the steps:** fetch injects the interrupt sequence only when
+- **No interrupt between the steps:** fetch injects an INTR or EXC only when
   decode takes `f_*`, and it holds `f_*` while `stall` is 1. So TMP, which carries a
   value from step 0 to step 1, never has to be saved by an interrupt handler.
 - A redirect starts again at step 0. Redirects come from execute, from the
@@ -357,8 +374,8 @@ With each instruction decode gives the two operands (`d_a_*`, `d_b_*`) and a
 | `d_cin` | carry in: 0, 1, the C flag, TMPL[0] (MULS) |
 | `d_fmask` | the flags it updates {V, N, Z, C} |
 | `d_a_tmpl` | ALU input a = TMPL (else operand A) |
-| `d_b_s3`, `d_s3` | ALU input b = the stage 3 value (else operand B); s3 = `stackregs` value (of `d_sp_sel`), TMPL or TMPH |
-| `d_res` | the result r: ALU y, operand A, operand B, s3, TMP, ALU y with TMPL[31] in bit 0 (DIVS), the ALU's flags (CMP3), or `d_imm` (CONS's return address) |
+| `d_b_s3`, `d_s3` | ALU input b = the stage 3 value (else operand B); s3 (4 bits) = `d_imm`, TMPL, TMPH, ST, PSP, RSP, FP, HLIM or VEC |
+| `d_res` | the result r: ALU y, operand A, operand B, s3, TMP, ALU y with TMPL[31] in bit 0 (DIVS), the ALU's flags (CMP3), or `d_imm` (a return address: INTR, EXC) |
 | `d_wen`, `d_rd` | the main register write: `d_rd` = r (or the loaded word) |
 | `d_x2_wen`, `d_x2_sel`, `d_x2` | the second write: special register `d_x2_sel` = ALU y, y2, operand A or B |
 | `d_load`, `d_store`, `d_size`, `d_signed` | memory, as stage 4 |
@@ -369,14 +386,24 @@ With each instruction decode gives the two operands (`d_a_*`, `d_b_*`) and a
 | `d_tl_we`; `d_th_we`, `d_th_y2` | TMPL = r; TMPH = ALU y2 or r |
 | `d_tl_shl`, `d_tl_shr` | TMPL shifts left (DIVS) / right (MULS), ALU y2[0] coming in |
 | `d_jump`, `d_cond`, `d_tgt` | a jump if the condition holds (TZ: operand B == 0), to operand A or ALU y |
-| `d_trap` | CONS step 0: a jump to `GC_VECTOR` when the ALU borrows (L > HLIM); only then do its store, its register write and its `stackregs` op happen |
+| `d_trap` | CONS step 0: exception 4 when the ALU borrows (L > HLIM): a redirect to `d_imm` (the CONS) with `redirect_exc` = 1, `redirect_exc_n` = 4; it writes and stores nothing |
 | `d_hl_we` | HLIM = r |
+| `d_vec_we` | VEC = r (bits 9..0 dropped) |
+| `d_vec` | INTR, EXC: a jump to {VEC[31:10], operand A[9:0]} with the push of R and R = `d_imm` |
+| `d_hw` | an INTR injected for a device: taken only if `irq`, I and `irq_num` still say so (then I = 0); else no effect but a jump to `d_imm` |
+| `d_ie` | I = 0 (CLI) or 1 (SEI, RTI) |
 
 The table of control words for every instruction is in `stage3/execute_tb.v` (the
 part that plays decode); the real decode will make the same.
 
-- **GC_VECTOR** (a parameter, 0xF000_0010 by default: the second line of the boot
-  RAM): where CONS traps to.
+- **VEC_RESET** (a parameter, 0xF000_0000 by default: the boot RAM): VEC after
+  reset.
+- `redirect_exc`, `redirect_exc_n`: an exception found in execute (so far CONS's, 4).
+  It goes with the redirect back to the failing instruction, through decode to
+  fetch, which injects `EXC n` there (decode adds its own, exception 1).
+- Outputs for cpu.v: `ie` (I) and `ie_off` (a device's INTR or CLI is in execute: I
+  may go to 0 at this edge), which keep fetch from injecting an INTR right behind one
+  taken.
 - **go** = the instruction in execute takes effect at this edge (valid, no stall
   from stage 4, no load-use wait). The registers of stage 3 are written at that
   edge, so the next instruction sees them with no forwarding.
@@ -390,7 +417,7 @@ Test: `stage3/execute_tb.v`: the real register file, execute, memory access and
 writeback, with a memory of 1..4 ticks latency, on a random program of 20,000
 instructions of the instruction set: all the stack ops (ROT, DROT as their two
 steps), the ALU ops, LIT, MOVR and ADDR with the register file and with PSP, RSP,
-FP, TMPL, TMPH and PC, and the jumps (CBR with all conditions, RET, EXC, MOVR PC, T,
+FP, TMPL, TMPH and PC, and the jumps (CBR with all conditions, RET, EXEC, MOVR PC, T,
 ADDR PC, T), each followed by an instruction a taken jump must throw away. A
 reference runs the program one instruction at a time; every register write, every
 jump, and at the end every register, the flags and the memory are checked.
@@ -401,7 +428,21 @@ the third CONS traps to a small GC handler that raises HLIM and returns, the CON
 then allocates; it sums the list with TTAG, CAR, CDR and TADD, untags the sum with
 ASRI, checks TADD's V for a non-fixnum and changes a car with RPLACA. The registers,
 the cells in memory, L, HLIM and RSP are checked at the end. `stage2/decode_tb.v`
-runs the LISP opcodes in its random code too, with a GC handler at its GC vector.
+runs the LISP opcodes in its random code too, with a GC handler at VEC + 16.
+
+Test of interrupts and exceptions: `stage2/irq_tb.v` runs `stage2/irq.s` (assembled
+into `irq.hex`) on two whole processors (`cpu.v`), one without interrupts and one with
+two devices that interrupt at random (about 5,000 times). The program uses the flags
+between instructions, calls, stack frames, CONS with its trap, a critical section
+(CLI .. SEI), a system call (INTR 48), an undefined opcode, EXC 3, and moves VEC
+halfway. Both must end with the same registers and memory; every interrupt must be
+handled once, none inside the critical section.
+
+Forwarding: the operand forwarded from `x_result` is taken only when `x_wen` is 1.
+The choice is made a tick early from `e_wen`, but execute can still drop the write
+(the end of UNEXT / NEXT2 / NEXT3, a CONS that does not trap, an INTR turned down);
+then the operand is the older value. (Found by the random code of `decode_tb.v`: a
+NEXT2 on T at the end of its loop gave the next instruction T - 1.)
 
 ### Branch conditions (`stage3/cond.v`)
 
@@ -670,7 +711,8 @@ critical path is from TMPL / the stack pointers through the ALU's adder to
 - Prefetch the next line into a second buffer, so moving into the next line costs
   no fill.
 - Function of R beyond the return stack's top. (L is the allocation pointer of LISP.)
-- The GC handler at the GC vector (0xF000_0010) in the boot program.
+- A garbage collector at VEC + 16 (0xF000_0010) in the boot program (it says "heap
+  full" and stops).
 - 63 MHz: see Timing. It would need a deeper pipeline; the registered `mem_stall` (a
   tick per memory access) is not done.
 - `display2`: at 42 and 54 MHz (`make test-clocks`) the video test bench reports 78
@@ -682,18 +724,22 @@ critical path is from TMPL / the stack pointers through the ALU's adder to
   HLIM), 1 MULT36X36; decode 1,896 LUTs, 72 ALU, 130 flip-flops, 32 RAM16SDP4. (By
   yosys 0.33 the LISP opcodes added about 76 LUTs to execute and 57 to decode.) New
   in the critical part of execute:
-  the trap (the ALU's borrow) on `redirect`, on the `stackregs` enable and on
-  `x_store` / `x_wen`; check the routed frequency with `make timing` in `timing`
+  the trap (the ALU's borrow) on `redirect` (no longer on the `stackregs` enable or
+  `x_store` / `x_wen`: the push is the EXC's); check the routed frequency with `make timing` in `timing`
   (`timing/core.v`: the five stages with two 8 KB block RAMs, as measured above;
   `make test` there runs it first in simulation).
 - The I/O devices on the I/O range (keyboard, mouse, video registers, ...), and an
   I/O decoder behind `io_*`.
 - The boot program for the block RAM (a `$readmemh` file for `BRAM_INIT`).
-- The real interrupt sequence (`irq_sequence.v`), and where `irq_pending` comes from.
-- The interrupt sequence (the stages are put together in `cpu.v`, and the computer
-  in `../computer`: see its README).
+- Interrupts in the boot program: handlers for the serial port and the sound
+  (vectors 16, 17); now the vector table sends them to "unexpected" and I stays 0.
+- More exceptions: a misaligned or unmapped address (execute has the address before
+  the access), divide by zero. A bus error in stage 4 would come too late to be
+  precise (the instruction has already changed PSP / RSP in stage 3).
+- `make timing` with the interrupt logic (new near the critical part: `refuse` on the
+  `stackregs` enable and on `x_wen`, the gate of `x_wen` on the forwarded operand).
 - The opcodes that read and write TMPL and TMPH, and the 64-bit shift opcodes.
 - A shift right of {C, T} by one, to get the remainder after DIVS.
   The sequencer is done: ROT and DROT are two steps, all else one.
-- The other jumps (CJMPL, CBR, CBRL, UNEXT, NEXT2, NEXT3, RET and EXC redirect from execute; the calls
+- The other jumps (CJMPL, CBR, CBRL, UNEXT, NEXT2, NEXT3, RET, RTI, EXEC, INTR and EXC redirect from execute; the calls
   JSRS, JSR, JSRL from decode).

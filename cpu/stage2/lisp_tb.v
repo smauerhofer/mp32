@@ -5,7 +5,7 @@
 //   make test-lisp
 //
 // The program builds the list (1 2 3) with CONS; the heap only has room for two cells,
-// so the third CONS traps to the GC handler at $100 (GC_VECTOR), which raises HLIM and
+// so the third CONS traps to the GC handler at $10 (VEC + 16), which raises HLIM and
 // returns; the CONS then allocates. Then it sums the list with TTAG, CAR, CDR and TADD,
 // untags the sum, sees TADD set V for a value that is not a fixnum, changes a car with
 // RPLACA. At the end the test bench checks the registers and the cells in memory.
@@ -32,12 +32,15 @@ module lisp_tb;
     reg  [127:0] line_data = 0;
     reg          line_ready = 0;
     wire [31:0]  pc;
-    wire         stall, redirect;
+    wire         stall, redirect, redirect_exc;
     wire [31:0]  redirect_pc;
+    wire [7:0]   redirect_exc_n;
 
     fetch #(.RESET_PC(32'h0)) fe (
         .clk(clk), .reset(reset),
-        .redirect(redirect), .redirect_pc(redirect_pc), .irq_pending(1'b0),
+        .redirect(redirect), .redirect_pc(redirect_pc),
+        .redirect_exc(redirect_exc), .redirect_exc_n(redirect_exc_n),
+        .irq_pending(1'b0), .irq_num(8'h0),
         .stall(stall), .f_valid(f_valid), .f_pc(f_pc), .f_instr(f_instr), .f_len(f_len),
         .f_inject(f_inject), .f_next_instr(f_next_instr), .f_load(f_load),
         .line_sel(line_sel), .line_addr(line_addr), .line_data(line_data),
@@ -69,7 +72,7 @@ module lisp_tb;
     wire [5:0]  d_a_sel, d_b_sel, d_rd;
     wire [31:0] d_a_data, d_b_data;
     wire [4:0]  d_alu_op;  wire [1:0] d_cin;  wire [3:0] d_fmask;
-    wire        d_a_tmpl, d_b_s3;  wire [2:0] d_s3;  wire [2:0] d_res;
+    wire        d_a_tmpl, d_b_s3;  wire [3:0] d_s3;  wire [2:0] d_res;
     wire        d_b_imm;  wire [31:0] d_imm;
     wire        d_wen, d_x2_wen;  wire [1:0] d_x2_sel, d_x2;
     wire        d_load, d_store, d_signed, d_wdata, d_addr;  wire [1:0] d_size;
@@ -77,14 +80,17 @@ module lisp_tb;
     wire        d_tmp_we, d_tmp_src, d_tl_we, d_th_we, d_th_y2, d_tl_shl, d_tl_shr, d_st_we;
     wire        d_jump, d_tgt;  wire [3:0] d_cond;
     wire        d_trap, d_hl_we, d_loop;
+    wire        d_vec, d_hw, d_vec_we;  wire [1:0] d_ie;
     wire [31:0] t, s, l;
 
     decode dec (
         .clk(clk), .reset(reset),
         .f_valid(f_valid), .f_pc(f_pc), .f_instr(f_instr), .f_len(f_len), .stall(stall),
+        .f_inject(f_inject),
         .f_next_instr(f_next_instr), .f_load(f_load),
         .advance(advance), .ex_redirect(ex_redirect), .ex_redirect_pc(ex_redirect_pc),
         .redirect(redirect), .redirect_pc(redirect_pc),
+        .redirect_exc(redirect_exc), .redirect_exc_n(redirect_exc_n),
         .w_en(w_en), .w_sel(w_sel), .w_data(w_data),
         .w2_en(w2_en), .w2_sel(w2_sel), .w2_data(w2_data),
         .d_valid(d_valid), .d_a_use(d_a_use), .d_a_sel(d_a_sel), .d_a_data(d_a_data),
@@ -97,6 +103,7 @@ module lisp_tb;
         .d_tmp_we(d_tmp_we), .d_tmp_src(d_tmp_src), .d_tl_we(d_tl_we), .d_th_we(d_th_we),
         .d_th_y2(d_th_y2), .d_tl_shl(d_tl_shl), .d_tl_shr(d_tl_shr), .d_st_we(d_st_we),
         .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(d_trap), .d_hl_we(d_hl_we), .d_loop(d_loop),
+        .d_vec(d_vec), .d_hw(d_hw), .d_ie(d_ie), .d_vec_we(d_vec_we),
         .t(t), .s(s), .r(), .l(l)
     );
 
@@ -109,7 +116,7 @@ module lisp_tb;
     wire [3:0]  flags_out;
     wire [31:0] psp, rsp, fp, tmpl, tmph, hlim;
 
-    execute #(.GC_VECTOR(32'h0000_0100)) ex (
+    execute #(.VEC_RESET(32'h0000_0000)) ex (
         .clk(clk), .reset(reset),
         .d_valid(d_valid), .d_a_use(d_a_use), .d_a_sel(d_a_sel), .d_a_data(d_a_data),
         .d_b_use(d_b_use), .d_b_sel(d_b_sel), .d_b_data(d_b_data),
@@ -121,6 +128,8 @@ module lisp_tb;
         .d_tmp_we(d_tmp_we), .d_tmp_src(d_tmp_src), .d_tl_we(d_tl_we), .d_th_we(d_th_we),
         .d_th_y2(d_th_y2), .d_tl_shl(d_tl_shl), .d_tl_shr(d_tl_shr), .d_st_we(d_st_we),
         .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(d_trap), .d_hl_we(d_hl_we), .d_loop(d_loop),
+        .d_vec(d_vec), .d_hw(d_hw), .d_ie(d_ie), .d_vec_we(d_vec_we),
+        .irq(1'b0), .irq_num(8'h0),
         .advance(advance), .mem_stall(mem_stall),
         .x_valid(x_valid), .x_load(x_load), .x_store(x_store), .x_size(x_size),
         .x_signed(x_signed), .x_addr(x_addr), .x_wdata(x_wdata), .x_wen(x_wen),
@@ -128,7 +137,8 @@ module lisp_tb;
         .w_en(w_en), .w_sel(w_sel), .w_data(w_data),
         .w2_en(w2_en), .w2_sel(w2_sel), .w2_data(w2_data),
         .redirect(ex_redirect), .redirect_pc(ex_redirect_pc),
-        .flags_out(flags_out), .psp(psp), .rsp(rsp), .fp(fp), .tmpl(tmpl), .tmph(tmph), .hlim(hlim)
+        .flags_out(flags_out), .psp(psp), .rsp(rsp), .fp(fp), .tmpl(tmpl), .tmph(tmph), .hlim(hlim),
+        .vec(), .ie(), .ie_off()
     );
 
     // ---- stage 4, with the data memory (1 KB)
@@ -184,7 +194,7 @@ module lisp_tb;
 
     // ================================================================ checks
     integer errors = 0, traps = 0;
-    always @(posedge clk) if (!reset && ex_redirect && ex_redirect_pc == 32'h100) traps = traps + 1;
+    always @(posedge clk) if (!reset && ex_redirect && ex_redirect_pc == 32'h10) traps = traps + 1;
 
     task expect(input [8*24-1:0] what, input [31:0] got, input [31:0] want);
         if (got !== want) begin

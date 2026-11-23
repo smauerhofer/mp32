@@ -46,23 +46,24 @@
 // A fill that has started is always finished, even after a redirect (the handshake
 // does not allow giving up halfway); then, if the PC has moved on, the next fill starts.
 //
-// ---------------------------------------------------------------- interrupts
-// When irq_pending is 1, stage 1 takes the interrupt: instead of instructions from
-// memory it hands stage 2 the interrupt sequence (irq_sequence.v), one instruction per
-// tick, with f_inject = 1 and f_pc = the PC. The PC does not change: it is the address
-// of the first instruction not fetched, where the program goes on afterwards.
+// ---------------------------------------------------------------- interrupts, exceptions
+// Stage 1 takes an interrupt or an exception by handing decode one instruction that is
+// not in memory (irq_sequence.v), with f_inject = 1 and f_pc = the PC. The PC does not
+// move: it is the address of the first instruction not fetched, where the program goes
+// on after the handler's RTI / RET. Everything older is already in the pipeline and
+// finishes; nothing younger has been fetched. So the interrupt is precise.
 //
-// After the last instruction of the sequence stage 1 fetches nothing more and waits
-// for a redirect: the sequence ends with a jump to the handler. Any redirect ends the
-// interrupt in stage 1:
-//   - the jump of the sequence: fetching goes on at the handler;
-//   - a redirect from an instruction older than the sequence (a branch taken while
-//     the sequence was coming): it throws the sequence away, and if the interrupt is
-//     still pending the sequence starts again, from its first instruction, at the
-//     new PC.
-// So stage 1 never acknowledges an interrupt: the sequence must do that (or turn
-// interrupts off) before its jump, or the interrupt would be taken again.
-// An instruction waiting in f_* (stall) is not affected; it goes first.
+//   - an exception: a redirect with redirect_exc = 1 (decode, an undefined opcode) moves
+//     the PC to the instruction that failed and asks for EXC redirect_exc_n there. The
+//     next instruction into f_* is that EXC, with f_pc = the failing instruction.
+//   - an interrupt: while irq_pending is 1 (a device asks, and the I flag is 1; cpu.v
+//     puts the two together), the next instruction into f_* is INTR irq_num.
+//
+// An exception goes before an interrupt. After the injected instruction stage 1 fetches
+// nothing more and waits for a redirect: INTR and EXC always jump (to the vector, or
+// for an INTR that execute turns down, back to f_pc). A redirect from an instruction
+// older than the injected one throws it away; if the interrupt is still pending it is
+// injected again, at the new PC. An instruction waiting in f_* (stall) goes first.
 //
 // ---------------------------------------------------------------- the PC
 // The PC (pc.v) is the address of the next instruction to fetch. reset sets it to
@@ -82,7 +83,10 @@ module fetch #(
     // from a later stage
     input  wire         redirect,
     input  wire [31:0]  redirect_pc,
-    input  wire         irq_pending,    // an interrupt is pending: take it
+    input  wire         redirect_exc,   // with redirect: inject EXC redirect_exc_n at redirect_pc
+    input  wire [7:0]   redirect_exc_n,
+    input  wire         irq_pending,    // an interrupt is pending (and enabled): take it
+    input  wire [7:0]   irq_num,        // its number: INTR irq_num
 
     // to stage 2, decode
     input  wire         stall,          // decode cannot take f_* at the next edge
@@ -136,22 +140,18 @@ module fetch #(
         end
     end
 
-    // ================================================================ interrupts
-    // irq_busy: an interrupt has been taken; until the next redirect no other is
-    // taken and nothing comes from memory. in_seq: the sequence is still coming out;
-    // seq_index is its next instruction.
+    // ================================================================ interrupts, exceptions
+    // irq_busy: an INTR or EXC has gone into f_*; until the next redirect nothing more
+    // comes. exc_req, exc_n: an exception asked for by the last redirect.
     reg         irq_busy;
-    reg         in_seq;
-    reg  [3:0]  seq_index;
+    reg         exc_req;
+    reg  [7:0]  exc_n;
 
-    wire        start   = irq_pending & !irq_busy;   // take an interrupt now
-    wire        inject  = start | in_seq;             // f_* gets an instruction of the sequence
+    wire        inject  = (exc_req | irq_pending) & !irq_busy;    // f_* gets INTR / EXC
 
     wire [31:0] seq_instr;
-    wire        seq_last;
     irq_sequence irq_seq (
-        .index(start ? 4'd0 : seq_index),
-        .instr(seq_instr), .last(seq_last)
+        .exc(exc_req), .num(exc_req ? exc_n : irq_num), .instr(seq_instr)
     );
 
     // an instruction from memory goes into f_*
@@ -163,7 +163,7 @@ module fetch #(
     pc #(.RESET_PC(RESET_PC)) program_counter (
         .clk(clk), .reset(reset),
         .load(redirect), .load_value(redirect_pc),
-        .irq_pending(irq_pending | irq_busy),
+        .irq_pending(inject | irq_busy),
         .step(take & from_mem), .len(len),
         .value(pc)
     );
@@ -177,17 +177,17 @@ module fetch #(
         if (reset | redirect) begin
             f_valid  <= 1'b0;
             irq_busy <= 1'b0;
-            in_seq   <= 1'b0;
+            exc_req  <= !reset & redirect_exc;
+            exc_n    <= redirect_exc_n;
         end else if (take) begin
             if (inject) begin
                 f_valid   <= 1'b1;
                 f_pc      <= pc;
                 f_instr   <= seq_instr;
-                f_len     <= {1'b0, seq_instr[7:6]} + 3'd1;
+                f_len     <= 3'd2;
                 f_inject  <= 1'b1;
                 irq_busy  <= 1'b1;
-                in_seq    <= !seq_last;
-                seq_index <= (start ? 4'd0 : seq_index) + 4'd1;
+                exc_req   <= 1'b0;
             end else begin
                 f_valid <= from_mem;
                 if (from_mem) begin

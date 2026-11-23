@@ -1,7 +1,8 @@
 // core.v: the mp32 core alone, for its timing on the chip: fetch, decode, execute,
 // memory access and writeback, with two 8 KB block RAMs (stage4/bram.v), one for the
 // code (on fetch's line port) and one for the data (on stage 4's word port). No cache,
-// SDRAM, I/O or interrupts: what is measured is the pipeline itself.
+// SDRAM or I/O: what is measured is the pipeline itself. The interrupt request comes
+// from a counter, so its logic stays in (the program never sets I, so none is taken).
 //
 //   make timing     (in cpu/timing) places and routes it at 63 MHz, with three seeds
 //
@@ -11,7 +12,7 @@
 // is folded into the 6 LEDs. A power-on reset holds the core for 16 ticks.
 //
 // The code RAM is loaded with the FPGA from CODE (one 128-bit line per row); the
-// memories repeat every 8 KB, so the core starts at 0 and CONS traps to $100.
+// memories repeat every 8 KB, so the core starts at 0 (VEC = 0) and CONS traps to $10.
 
 module top #(
     parameter CODE = ""
@@ -33,12 +34,29 @@ module top #(
     wire [31:4]  line_addr;
     wire [127:0] line_data;
     wire [31:0]  pc;
-    wire         stall, redirect;
+    wire         stall, redirect, redirect_exc;
     wire [31:0]  redirect_pc;
+    wire [7:0]   redirect_exc_n;
+
+    // ---------------------------------------------------------------- the interrupt request
+    // as cpu.v makes it, from a counter
+    reg  [9:0]   irq_count = 0;
+    always @(posedge clk) irq_count <= irq_count + 1'b1;
+    wire         irq = irq_count[9];
+    wire [7:0]   irq_num = irq_count[7:0];
+    wire         ie, ie_off;
+    reg          irq_pending;
+    reg  [7:0]   irq_pnum;
+    always @(posedge clk) begin
+        irq_pending <= !reset & irq & ie & !ie_off;
+        irq_pnum    <= irq_num;
+    end
 
     fetch #(.RESET_PC(32'h0)) fe (
         .clk(clk), .reset(reset),
-        .redirect(redirect), .redirect_pc(redirect_pc), .irq_pending(1'b0),
+        .redirect(redirect), .redirect_pc(redirect_pc),
+        .redirect_exc(redirect_exc), .redirect_exc_n(redirect_exc_n),
+        .irq_pending(irq_pending), .irq_num(irq_pnum),
         .stall(stall), .f_valid(f_valid), .f_pc(f_pc), .f_instr(f_instr), .f_len(f_len),
         .f_inject(f_inject), .f_next_instr(f_next_instr), .f_load(f_load),
         .line_sel(line_sel), .line_addr(line_addr), .line_data(line_data),
@@ -53,6 +71,8 @@ module top #(
     // ---------------------------------------------------------------- stage 2
     wire        advance, ex_redirect;
     wire [31:0] ex_redirect_pc;
+    wire        ex_redirect_exc;
+    wire [7:0]  ex_redirect_exc_n;
     wire        w_en, w2_en;
     wire [5:0]  w_sel;
     wire [1:0]  w2_sel;
@@ -62,7 +82,7 @@ module top #(
     wire [5:0]  d_a_sel, d_b_sel, d_rd;
     wire [31:0] d_a_data, d_b_data;
     wire [4:0]  d_alu_op;  wire [1:0] d_cin;  wire [3:0] d_fmask;
-    wire        d_a_tmpl, d_b_s3;  wire [2:0] d_s3;  wire [2:0] d_res;
+    wire        d_a_tmpl, d_b_s3;  wire [3:0] d_s3;  wire [2:0] d_res;
     wire        d_b_imm;  wire [31:0] d_imm;
     wire        d_wen, d_x2_wen;  wire [1:0] d_x2_sel, d_x2;
     wire        d_load, d_store, d_signed, d_wdata, d_addr;  wire [1:0] d_size;
@@ -70,13 +90,17 @@ module top #(
     wire        d_tmp_we, d_tmp_src, d_tl_we, d_th_we, d_th_y2, d_tl_shl, d_tl_shr, d_st_we;
     wire        d_jump, d_tgt;  wire [3:0] d_cond;
     wire        d_trap, d_hl_we, d_loop;
+    wire        d_vec, d_hw, d_vec_we;  wire [1:0] d_ie;
 
     decode dec (
         .clk(clk), .reset(reset),
         .f_valid(f_valid), .f_pc(f_pc), .f_instr(f_instr), .f_len(f_len), .stall(stall),
+        .f_inject(f_inject),
         .f_next_instr(f_next_instr), .f_load(f_load),
         .advance(advance), .ex_redirect(ex_redirect), .ex_redirect_pc(ex_redirect_pc),
+        .ex_redirect_exc(ex_redirect_exc), .ex_redirect_exc_n(ex_redirect_exc_n),
         .redirect(redirect), .redirect_pc(redirect_pc),
+        .redirect_exc(redirect_exc), .redirect_exc_n(redirect_exc_n),
         .w_en(w_en), .w_sel(w_sel), .w_data(w_data),
         .w2_en(w2_en), .w2_sel(w2_sel), .w2_data(w2_data),
         .d_valid(d_valid), .d_a_use(d_a_use), .d_a_sel(d_a_sel), .d_a_data(d_a_data),
@@ -89,6 +113,7 @@ module top #(
         .d_tmp_we(d_tmp_we), .d_tmp_src(d_tmp_src), .d_tl_we(d_tl_we), .d_th_we(d_th_we),
         .d_th_y2(d_th_y2), .d_tl_shl(d_tl_shl), .d_tl_shr(d_tl_shr), .d_st_we(d_st_we),
         .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(d_trap), .d_hl_we(d_hl_we), .d_loop(d_loop),
+        .d_vec(d_vec), .d_hw(d_hw), .d_ie(d_ie), .d_vec_we(d_vec_we),
         .t(), .s(), .r(), .l()
     );
 
@@ -99,7 +124,7 @@ module top #(
     wire [31:0] x_addr, x_wdata, x_result, x2_data;
     wire [5:0]  x_rd;
 
-    execute #(.GC_VECTOR(32'h0000_0100)) ex (
+    execute #(.VEC_RESET(32'h0000_0000)) ex (
         .clk(clk), .reset(reset),
         .d_valid(d_valid), .d_a_use(d_a_use), .d_a_sel(d_a_sel), .d_a_data(d_a_data),
         .d_b_use(d_b_use), .d_b_sel(d_b_sel), .d_b_data(d_b_data),
@@ -111,6 +136,8 @@ module top #(
         .d_tmp_we(d_tmp_we), .d_tmp_src(d_tmp_src), .d_tl_we(d_tl_we), .d_th_we(d_th_we),
         .d_th_y2(d_th_y2), .d_tl_shl(d_tl_shl), .d_tl_shr(d_tl_shr), .d_st_we(d_st_we),
         .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(d_trap), .d_hl_we(d_hl_we), .d_loop(d_loop),
+        .d_vec(d_vec), .d_hw(d_hw), .d_ie(d_ie), .d_vec_we(d_vec_we),
+        .irq(irq), .irq_num(irq_num),
         .advance(advance), .mem_stall(mem_stall),
         .x_valid(x_valid), .x_load(x_load), .x_store(x_store), .x_size(x_size),
         .x_signed(x_signed), .x_addr(x_addr), .x_wdata(x_wdata), .x_wen(x_wen),
@@ -118,7 +145,9 @@ module top #(
         .w_en(w_en), .w_sel(w_sel), .w_data(w_data),
         .w2_en(w2_en), .w2_sel(w2_sel), .w2_data(w2_data),
         .redirect(ex_redirect), .redirect_pc(ex_redirect_pc),
-        .flags_out(), .psp(), .rsp(), .fp(), .tmpl(), .tmph(), .hlim()
+        .redirect_exc(ex_redirect_exc), .redirect_exc_n(ex_redirect_exc_n),
+        .flags_out(), .psp(), .rsp(), .fp(), .tmpl(), .tmph(), .hlim(),
+        .vec(), .ie(ie), .ie_off(ie_off)
     );
 
     // ---------------------------------------------------------------- stage 4, the data RAM

@@ -11,13 +11,21 @@
 //            ../stage5/writeback.v
 //   vvp decode_tb.vvp
 //
-// The LISP opcodes too: CONS traps (to GC = 0x9000 here) when L > HLIM, and goes
-// through its four steps when not. The code starts by setting HLIM, and at GC there is
-// a tiny "garbage collector": L = 1, HLIM = $79 (a heap of 16 cells), RET. So the CONS
-// that trapped allocates when it runs again, and every 16 CONS or so one traps.
+// The LISP opcodes too: CONS raises exception 4 (EXC 4: to VEC + 16 = GC = 0x9010 here) when
+// L > HLIM, and goes through its four steps when not. The code starts by setting
+// HLIM, and at GC there is a tiny "garbage collector": L = 1, HLIM = $79 (a heap of 16
+// cells), RET. So the CONS that trapped allocates when it runs again, and every 16
+// CONS or so one traps.
+//
+// INTR and EXC call through the vector table at VEC = 0x9000: INTR 0, 2, 3 go to a RET
+// (back after the INTR); EXC 1, and every undefined opcode (exception 1: decode sends
+// fetch back to it, fetch injects EXC 1), go to a handler at 0x9020 that skips the
+// instruction: it reads its first byte (a load from 0x0040_xxxx reads the code memory
+// here), adds its length to R and returns. CLI, SEI and RTI change the I flag,
+// which MOVR T, ST reads in bit 4 (there are no interrupts here).
 //
 // 64 KB of random machine code: instructions of every defined opcode (and some that
-// are not defined, which do nothing), with random operands, one after the other. The
+// are not defined, which trap), with random operands, one after the other. The
 // code memory answers fetch's line reads after 1 to 8 ticks; the data memory (1 KB,
 // addresses wrap) answers stage 4 after 1 to 4 ticks. Code and data are separate here,
 // so stores cannot change the code.
@@ -38,7 +46,8 @@ module decode_tb;
     always #18.5 clk = ~clk;              // 27 MHz
 
     parameter NREF = 40000;               // instructions the reference runs
-    parameter [31:0] GC = 32'h0000_9000;  // where CONS traps to (execute's GC_VECTOR)
+    parameter [31:0] VEC = 32'h0000_9000; // the vector table (execute's VEC_RESET)
+    parameter [31:0] GC  = VEC + 16;      // where CONS traps to (exception 4)
 
     localparam [4:0] A_ADD = 0, A_ADC = 1, A_SUB = 2, A_SBC = 3, A_AND = 4, A_OR = 5,
                      A_XOR = 6, A_NOT = 7, A_LSL = 8, A_LSR = 9, A_ASR = 10, A_ROR = 11,
@@ -63,12 +72,15 @@ module decode_tb;
     reg  [127:0] line_data = 0;
     reg          line_ready = 0;
     wire [31:0]  pc;
-    wire         stall, redirect;
+    wire         stall, redirect, redirect_exc;
     wire [31:0]  redirect_pc;
+    wire [7:0]   redirect_exc_n;
 
     fetch #(.RESET_PC(32'h0)) fe (
         .clk(clk), .reset(reset),
-        .redirect(redirect), .redirect_pc(redirect_pc), .irq_pending(1'b0),
+        .redirect(redirect), .redirect_pc(redirect_pc),
+        .redirect_exc(redirect_exc), .redirect_exc_n(redirect_exc_n),
+        .irq_pending(1'b0), .irq_num(8'h0),
         .stall(stall), .f_valid(f_valid), .f_pc(f_pc), .f_instr(f_instr), .f_len(f_len),
         .f_inject(f_inject), .f_next_instr(f_next_instr), .f_load(f_load),
         .line_sel(line_sel), .line_addr(line_addr), .line_data(line_data),
@@ -91,6 +103,8 @@ module decode_tb;
     // ---- stage 2: decode (real)
     wire        advance, ex_redirect;
     wire [31:0] ex_redirect_pc;
+    wire        ex_redirect_exc;
+    wire [7:0]  ex_redirect_exc_n;
     wire        w_en, w2_en;
     wire [5:0]  w_sel;
     wire [1:0]  w2_sel;
@@ -100,7 +114,7 @@ module decode_tb;
     wire [5:0]  d_a_sel, d_b_sel, d_rd;
     wire [31:0] d_a_data, d_b_data;
     wire [4:0]  d_alu_op;  wire [1:0] d_cin;  wire [3:0] d_fmask;
-    wire        d_a_tmpl, d_b_s3;  wire [2:0] d_s3;  wire [2:0] d_res;
+    wire        d_a_tmpl, d_b_s3;  wire [3:0] d_s3;  wire [2:0] d_res;
     wire        d_b_imm;  wire [31:0] d_imm;
     wire        d_wen, d_x2_wen;  wire [1:0] d_x2_sel, d_x2;
     wire        d_load, d_store, d_signed, d_wdata, d_addr;  wire [1:0] d_size;
@@ -108,13 +122,16 @@ module decode_tb;
     wire        d_tmp_we, d_tmp_src, d_tl_we, d_th_we, d_th_y2, d_tl_shl, d_tl_shr, d_st_we;
     wire        d_jump, d_tgt;  wire [3:0] d_cond;
     wire        d_trap, d_hl_we, d_loop;
+    wire        d_vec, d_hw, d_vec_we;  wire [1:0] d_ie;
 
     decode dec (
         .clk(clk), .reset(reset),
         .f_valid(f_valid), .f_pc(f_pc), .f_instr(f_instr), .f_len(f_len), .stall(stall),
-        .f_next_instr(f_next_instr), .f_load(f_load),
+        .f_inject(f_inject), .f_next_instr(f_next_instr), .f_load(f_load),
         .advance(advance), .ex_redirect(ex_redirect), .ex_redirect_pc(ex_redirect_pc),
+        .ex_redirect_exc(ex_redirect_exc), .ex_redirect_exc_n(ex_redirect_exc_n),
         .redirect(redirect), .redirect_pc(redirect_pc),
+        .redirect_exc(redirect_exc), .redirect_exc_n(redirect_exc_n),
         .w_en(w_en), .w_sel(w_sel), .w_data(w_data),
         .w2_en(w2_en), .w2_sel(w2_sel), .w2_data(w2_data),
         .d_valid(d_valid), .d_a_use(d_a_use), .d_a_sel(d_a_sel), .d_a_data(d_a_data),
@@ -127,6 +144,7 @@ module decode_tb;
         .d_tmp_we(d_tmp_we), .d_tmp_src(d_tmp_src), .d_tl_we(d_tl_we), .d_th_we(d_th_we),
         .d_th_y2(d_th_y2), .d_tl_shl(d_tl_shl), .d_tl_shr(d_tl_shr), .d_st_we(d_st_we),
         .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(d_trap), .d_hl_we(d_hl_we), .d_loop(d_loop),
+        .d_vec(d_vec), .d_hw(d_hw), .d_ie(d_ie), .d_vec_we(d_vec_we),
         .t(), .s(), .r(), .l()
     );
 
@@ -139,7 +157,7 @@ module decode_tb;
     wire [3:0]  flags_out;
     wire [31:0] psp, rsp, fp, tmpl, tmph;
 
-    execute #(.GC_VECTOR(GC)) ex (
+    execute #(.VEC_RESET(VEC)) ex (
         .clk(clk), .reset(reset),
         .d_valid(d_valid), .d_a_use(d_a_use), .d_a_sel(d_a_sel), .d_a_data(d_a_data),
         .d_b_use(d_b_use), .d_b_sel(d_b_sel), .d_b_data(d_b_data),
@@ -151,6 +169,8 @@ module decode_tb;
         .d_tmp_we(d_tmp_we), .d_tmp_src(d_tmp_src), .d_tl_we(d_tl_we), .d_th_we(d_th_we),
         .d_th_y2(d_th_y2), .d_tl_shl(d_tl_shl), .d_tl_shr(d_tl_shr), .d_st_we(d_st_we),
         .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(d_trap), .d_hl_we(d_hl_we), .d_loop(d_loop),
+        .d_vec(d_vec), .d_hw(d_hw), .d_ie(d_ie), .d_vec_we(d_vec_we),
+        .irq(1'b0), .irq_num(8'h0),
         .advance(advance), .mem_stall(mem_stall),
         .x_valid(x_valid), .x_load(x_load), .x_store(x_store), .x_size(x_size),
         .x_signed(x_signed), .x_addr(x_addr), .x_wdata(x_wdata), .x_wen(x_wen),
@@ -158,7 +178,9 @@ module decode_tb;
         .w_en(w_en), .w_sel(w_sel), .w_data(w_data),
         .w2_en(w2_en), .w2_sel(w2_sel), .w2_data(w2_data),
         .redirect(ex_redirect), .redirect_pc(ex_redirect_pc),
-        .flags_out(flags_out), .psp(psp), .rsp(rsp), .fp(fp), .tmpl(tmpl), .tmph(tmph), .hlim()
+        .redirect_exc(ex_redirect_exc), .redirect_exc_n(ex_redirect_exc_n),
+        .flags_out(flags_out), .psp(psp), .rsp(rsp), .fp(fp), .tmpl(tmpl), .tmph(tmph), .hlim(),
+        .vec(), .ie(), .ie_off()
     );
 
     // ---- stage 4: memory access (real), with the data memory
@@ -198,7 +220,8 @@ module decode_tb;
     // ================================================================ the reference
     reg [31:0] rf [0:31];
     reg [31:0] sp [0:3];                  // T S R L
-    reg [31:0] r_psp, r_rsp, r_fp, r_tmpl, r_tmph, r_hlim, r_pc;
+    reg [31:0] r_psp, r_rsp, r_fp, r_tmpl, r_tmph, r_hlim, r_pc, r_vec;
+    reg        r_ie;
     reg [3:0]  r_fl;
     reg [31:0] rmem [0:255];
     reg [31:0] mem0 [0:255];              // what the data memory starts with
@@ -215,6 +238,7 @@ module decode_tb;
     reg        trapped;
     integer    n_cons, n_gc;              // CONS allocated, CONS trapped (in the reference)
     integer    n_loop, n_lend;            // UNEXT, NEXT2, NEXT3: branched back, ended
+    integer    n_intr, n_exc, n_undef;    // INTR, EXC from memory, undefined opcodes
 
     // what it does, in order
     parameter MAXW = 3 * NREF;
@@ -257,8 +281,15 @@ module decode_tb;
             ptr = ptr - 4;
         end
     endtask
+    // a word as the data memory answers: 0x0040_xxxx is the code (for the handler that
+    // skips an undefined instruction), all else the 1 KB of data (the address wraps)
+    function [31:0] memword(input [31:0] addr);
+        memword = (addr[31:16] == 16'h0040) ? {cmem[{addr[15:2], 2'd3}], cmem[{addr[15:2], 2'd2}],
+                                               cmem[{addr[15:2], 2'd1}], cmem[{addr[15:2], 2'd0}]}
+                                            : rmem[addr[9:2]];
+    endfunction
     task rpop(inout [31:0] ptr, output [31:0] v);
-        begin ptr = ptr + 4; v = rmem[ptr[9:2]]; end
+        begin ptr = ptr + 4; v = memword(ptr); end
     endtask
     // LDR / STR: a byte, halfword or word at addr (the low bits of an aligned size dropped)
     task rstore(input [31:0] addr, input [31:0] v, input [1:0] size);
@@ -283,7 +314,7 @@ module decode_tb;
         reg [7:0]  b8;
         reg [15:0] h;
         begin
-            m = rmem[addr[9:2]];
+            m = memword(addr);
             b8 = m >> (8 * addr[1:0]);
             h  = addr[1] ? m[31:16] : m[15:0];
             case (size)
@@ -295,7 +326,10 @@ module decode_tb;
     endfunction
 
     task jump(input [31:0] to);
-        begin e_jump[n_jmp] = to; n_jmp = n_jmp + 1; r_pc = to; last_jump = cur_pc; end
+        begin
+            e_jump[n_jmp] = to; n_jmp = n_jmp + 1; r_pc = to;
+            if (cur_pc[15:6] != VEC[15:6]) last_jump = cur_pc;     // not the handlers' own jumps
+        end
     endtask
 
     // traps: random code can get caught in a loop that never ends (a jump through data
@@ -306,29 +340,40 @@ module decode_tb;
     parameter TRAP = 40;
 
     // the stage 3 registers and PC, as decode numbers them: 0 PSP 1 RSP 2 FP 4 TMPL 5 TMPH
-    // 6 ST (the flags in bits 3..0; a write sets them, after what the ALU set) 7 HLIM
+    // 6 ST (the flags in bits 3..0, I in bit 4; a write sets the flags, after what the
+    // ALU set, and leaves I) 7 HLIM 8 VEC (bits 9..0 are 0)
     function [31:0] s3get(input [3:0] w);
         case (w) 0: s3get = r_psp; 1: s3get = r_rsp; 2: s3get = r_fp;
-                 4: s3get = r_tmpl; 6: s3get = {28'h0, r_fl}; 7: s3get = r_hlim;
+                 4: s3get = r_tmpl; 6: s3get = {27'h0, r_ie, r_fl}; 7: s3get = r_hlim;
+                 8: s3get = r_vec;
                  default: s3get = r_tmph; endcase
     endfunction
     task s3put(input [3:0] w, input [31:0] v);
         case (w) 0: r_psp = v; 1: r_rsp = v; 2: r_fp = v;
-                 4: r_tmpl = v; 6: r_fl = v[3:0]; 7: r_hlim = v; default: r_tmph = v; endcase
+                 4: r_tmpl = v; 6: r_fl = v[3:0]; 7: r_hlim = v;
+                 8: r_vec = {v[31:10], 10'h0}; default: r_tmph = v; endcase
     endtask
 
     // a register as byte 1 / 2 names it: in the register file, its stage 3 / PC number
     function file_of(input [5:0] g); file_of = !g[5] | (g[4:2] == 0); endfunction
-    // PSP RSP FP TMPL TMPH ST HLIM
-    function is_s3(input [5:0] g); is_s3 = (g == 6'h24) || (g == 6'h25) || (g == 6'h26) || (g == 6'h28) || (g == 6'h29) || (g == 6'h2A) || (g == 6'h2B); endfunction
+    // PSP RSP FP TMPL TMPH ST HLIM VEC
+    function is_s3(input [5:0] g); is_s3 = (g == 6'h24) || (g == 6'h25) || (g == 6'h26) || (g == 6'h28) || (g == 6'h29) || (g == 6'h2A) || (g == 6'h2B) || (g == 6'h2C); endfunction
     // 15: none
     function [3:0] w_of(input [5:0] g);
         case (g)
             6'b100100: w_of = 0; 6'b100101: w_of = 1; 6'b100110: w_of = 2;
             6'b100111: w_of = 3; 6'b101000: w_of = 4; 6'b101001: w_of = 5;
-            6'b101010: w_of = 6; 6'b101011: w_of = 7;
+            6'b101010: w_of = 6; 6'b101011: w_of = 7; 6'b101100: w_of = 8;
             default:   w_of = 15;
         endcase
+    endfunction
+
+    // the opcodes of the instruction set (byte 0)
+    function defined(input [7:0] o);
+        defined = (o <= 8'h36) || (o >= 8'h40 && o <= 8'h44) || (o >= 8'h46 && o <= 8'h4A) ||
+                  (o >= 8'h50 && o <= 8'h57) || (o >= 8'h80 && o <= 8'h88) ||
+                  (o >= 8'h90 && o <= 8'h97) || o == 8'hC0 || o == 8'hC1 || o == 8'hC2 ||
+                  o == 8'hC4 || o == 8'hC5 || o == 8'hC6 || o == 8'hC8 || (o >= 8'hD0 && o <= 8'hD7);
     endfunction
 
     // one instruction at r_pc
@@ -354,7 +399,7 @@ module decode_tb;
             w = w_of(g);
             count[op] = count[op] + 1;
             cur_pc = r_pc;
-            if (r_pc[15:4] == GC[15:4]) ;                 // the GC handler: every trap comes here
+            if (r_pc[15:6] == VEC[15:6]) ;                // the vector table, the handlers: every trap comes here
             else if (hits[r_pc[15:0]] == TRAP) trapped = 1;
             else hits[r_pc[15:0]] = hits[r_pc[15:0]] + 1;
             r_pc = nx;                                    // unless it jumps
@@ -399,7 +444,7 @@ module decode_tb;
             8'h1D: begin alu_(A_MULS, t, s, r_tmpl[0], 4'h0); w1(T_, ra_y);             // MULS
                          r_tmpl = {ra_y2[0], r_tmpl[31:1]}; end
             8'h1E: alu_(A_SUB, s, t, 1, 4'hF);                                          // CMP
-            8'h1F: begin jump(rr); w1(R_, nx); end                                      // EXC
+            8'h1F: begin jump(rr); w1(R_, nx); end                                      // EXEC
             8'h20, 8'h21, 8'h22, 8'h23, 8'h24, 8'h25, 8'h26, 8'h27: begin              // shifts
                        case (op)
                            8'h20: alu_(A_ASL,  t, 1, r_fl[0], 4'hF);
@@ -422,13 +467,21 @@ module decode_tb;
                        v = sp[3];                                                       // L
                        if (v > r_hlim) begin                                            // full: the trap
                            n_gc = n_gc + 1;
-                           rpush(r_rsp, rr); w1(R_, pc_of); jump(GC);
+                           jump(pc_of);               // execute sends fetch back to the CONS ...
+                           rpush(r_rsp, rr); w1(R_, pc_of); jump(r_vec + 16);   // ... and EXC 4 there
                        end else begin
                            n_cons = n_cons + 1;
                            rstore(v - 1, s, 2'b10); rstore(v + 3, t, 2'b10); w1(T_, v);
                            rpop(r_psp, v1); rec(1, S_, v1, 1, 3, v + 8);
                        end
                    end
+            8'h34: r_ie = 0;                                                            // CLI
+            8'h35: r_ie = 1;                                                            // SEI
+            8'h36: begin jump(rr); rpop(r_rsp, v); w1(R_, v); r_ie = 1; end             // RTI
+            8'h49: begin rpush(r_rsp, rr); w1(R_, nx); jump(r_vec + 4 * b1);           // INTR n
+                         n_intr = n_intr + 1; end
+            8'h4A: begin rpush(r_rsp, rr); w1(R_, pc_of); jump(r_vec + 4 * b1);        // EXC n
+                         n_exc = n_exc + 1; end
             8'h47: if (b1[7:5] <= 4) begin                                              // SHI
                        case (b1[7:5])
                            0: alu_(A_LSL, t, b1[4:0], r_fl[0], 4'hF);
@@ -614,7 +667,11 @@ module decode_tb;
                            else                    s3put(w_of(g1), v);
                        end
                    end
-            default: ;                                                                  // NOP, unknown
+            default: if (!defined(op)) begin                                            // undefined: exception 1
+                         n_undef = n_undef + 1;
+                         jump(pc_of);                     // decode sends fetch back to it ...
+                         rpush(r_rsp, rr); w1(R_, pc_of); jump(r_vec + 4);   // ... and EXC 1 there
+                     end                                                                // NOP
             endcase
         end
     endtask
@@ -638,7 +695,7 @@ module decode_tb;
                 10: g = 6'b101000;  11: g = 6'b101001;                     // TMPL TMPH
                 12: g = 6'b101010;                                         // ST
                 13: g = 6'b101011;                                         // HLIM
-                default: g = x[13:8];                                      // anything
+                default: g = (x[13:8] == 6'h2C) ? 6'h2B : x[13:8];         // anything (not VEC)
             endcase
             // PC as a destination (a jump through T) only now and then
             if (g == 6'b100111 && !x[6] && x[22:21] != 0) g = 6'b100000;
@@ -668,6 +725,8 @@ module decode_tb;
             for (o = 8'hD0; o <= 8'hD7; o = o + 1) opcode(o);
             opcode(8'hC4); opcode(8'hC5);
             opcode(8'h48); opcode(8'h88); opcode(8'hC8);                       // UNEXT, NEXT2, NEXT3
+            opcode(8'h34); opcode(8'h35); opcode(8'h36);                       // CLI, SEI, RTI
+            opcode(8'h49); opcode(8'h4A);                                      // INTR, EXC
             // the start: HLIM = $7FFFFF (MOVR HLIM, T), so CONS allocates until L
             // passes it; L comes near it now and then (MOVR L, T), so it also traps
             cmem[0] = 8'hC0; cmem[1] = 8'hFF; cmem[2] = 8'hFF; cmem[3] = 8'h7F;    // LIT24 $7FFFFF
@@ -678,8 +737,8 @@ module decode_tb;
                 if (x[7:0] < 8) o = $random(seed);                       // anything, rarely
                 else if (x[7:0] < 40) o = (x[9:8] == 0) ? 8'h40 : (x[9:8] == 1) ? 8'h80 : 8'hC0;  // LITs
                 else            o = ops[(x[31:16] % n_ops)];
-                // jumps through data (RET, EXC, MOVR / ADDR .. CMPR PC, T) can loop: keep them rare
-                while ((o == 8'h01 || o == 8'h1F) && x[11:10] != 0) begin
+                // jumps through data (RET, EXEC, RTI, MOVR / ADDR .. CMPR PC, T) can loop: keep them rare
+                while ((o == 8'h01 || o == 8'h1F || o == 8'h36) && x[11:10] != 0) begin
                     o = ops[($random(seed) & 32'h7FFF_FFFF) % n_ops]; x[11:10] = $random(seed);
                 end
                 // CJMPL at the end of a line (14, 15) has no later instruction in the
@@ -757,6 +816,8 @@ module decode_tb;
                     cmem[(a + 2) & 16'hFFFF] = {1'b0, x[22:16]};         // +0 .. +127
                     if (o == 8'hC8) cmem[(a + 3) & 16'hFFFF] = {6'h0, x[30:29]};   // .. +1023
                 end
+                if (o == 8'h49) cmem[(a + 1) & 16'hFFFF] = (x[19:18] == 1) ? 8'd0 : {6'd0, x[19:18]};  // INTR 0, 2, 3
+                if (o == 8'h4A) cmem[(a + 1) & 16'hFFFF] = 8'd1;                 // EXC 1
                 if (o == 8'h81) cmem[(a + 2) & 16'hFFFF] = {1'b0, 2'b00, x[22:18]};   // +0 .. +511
                 if (o == 8'hC1) cmem[(a + 3) & 16'hFFFF] = {1'b0, x[24:18]};
                 if (o == 8'h42) cmem[(a + 1) & 16'hFFFF] = {1'b0, x[24:18]};
@@ -801,7 +862,10 @@ module decode_tb;
                                                    g_st, b_addr, b_wdata, e_st_a[g_st], e_st_d[g_st]);
                     end
                     g_st = g_st + 1;
-                end else
+                end else if (b_addr[31:16] == 16'h0040)                      // the code
+                    b_rdata <= {cmem[{b_addr[15:2], 2'd3}], cmem[{b_addr[15:2], 2'd2}],
+                                cmem[{b_addr[15:2], 2'd1}], cmem[{b_addr[15:2], 2'd0}]};
+                else
                     b_rdata <= dmem[b_addr[9:2]];
                 dwait = -1;
             end else dwait = dwait - 1;
@@ -837,14 +901,30 @@ module decode_tb;
     end
 
     integer k, n_kinds, n_traps;
+    reg [7:0] skip_code [0:14];
+    initial begin
+        skip_code[0]  = 8'hC0; skip_code[1]  = 8'h00; skip_code[2]  = 8'h00; skip_code[3] = 8'h40; // LIT24 $400000 (the code)
+        skip_code[4]  = 8'h50; skip_code[5]  = 8'h62;                          // ADDR T, R
+        skip_code[6]  = 8'h84; skip_code[7]  = 8'h20; skip_code[8]  = 8'h20;   // LDRB T, T (the opcode)
+        skip_code[9]  = 8'h47; skip_code[10] = 8'h26;                          // LSRI 6
+        skip_code[11] = 8'h28;                                                 // INC: its length
+        skip_code[12] = 8'h50; skip_code[13] = 8'h22;                          // ADDR R, T
+        skip_code[14] = 8'h01;                                                 // RET
+    end
     initial begin
         // the data memory starts with random words (the same in both), so loads see
         // negative bytes and halfwords too
         for (k = 0; k < 256; k = k + 1) begin mem0[k] = $random(seed); dmem[k] = mem0[k]; count[k] = 0; end
         for (k = 0; k < 65536; k = k + 1) cmem[k] = 0;
         make_code;
-        // the GC handler (its line, whole)
-        for (k = 0; k < 16; k = k + 1) cmem[GC[15:0] + k] = 8'h00;
+        // the vector table and the handlers (four lines, whole)
+        for (k = 0; k < 64; k = k + 1) cmem[VEC[15:0] + k] = 8'h00;
+        cmem[VEC[15:0] + 0] = 8'h01;                                                           // 0: RET
+        cmem[VEC[15:0] + 4] = 8'h81; cmem[VEC[15:0] + 5] = 8'hE9; cmem[VEC[15:0] + 6] = 8'h01;  // 1: CBR A, skip
+        cmem[VEC[15:0] + 8] = 8'h01;                                                           // 2: RET
+        cmem[VEC[15:0] + 12] = 8'h01;                                                          // 3: RET
+        // skip ($9020): R = R + the length of the instruction at R
+        for (k = 0; k < 15; k = k + 1) cmem[VEC[15:0] + 32 + k] = skip_code[k];
         cmem[GC[15:0] + 0] = 8'h83; cmem[GC[15:0] + 1] = 8'hA3; cmem[GC[15:0] + 2] = 8'h01;   // MOVI2 L, 1
         cmem[GC[15:0] + 3] = 8'h83; cmem[GC[15:0] + 4] = 8'hAB; cmem[GC[15:0] + 5] = 8'h79;   // MOVI2 HLIM, $79
         cmem[GC[15:0] + 6] = 8'h01;                                                             // RET
@@ -858,7 +938,8 @@ module decode_tb;
             for (k = 0; k < 256; k = k + 1) begin rmem[k] = mem0[k]; count[k] = 0; end
             for (k = 0; k < 65536; k = k + 1) hits[k] = 0;
             r_psp = 0; r_rsp = 0; r_fp = 0; r_tmpl = 0; r_tmph = 0; r_hlim = 0; r_fl = 0; r_pc = 0;
-            n_cons = 0; n_gc = 0; n_loop = 0; n_lend = 0;
+            r_vec = VEC; r_ie = 0;
+            n_cons = 0; n_gc = 0; n_loop = 0; n_lend = 0; n_intr = 0; n_exc = 0; n_undef = 0;
             n_rec = 0; n_st = 0; n_jmp = 0; trapped = 0; last_jump = 0;
             for (k = 0; k < NREF && !trapped; k = k + 1) step;
             if (trapped) begin
@@ -893,14 +974,16 @@ module decode_tb;
                  NREF, n_kinds, n_rec, n_st, n_jmp, n_traps, ticks);
         $display("   CONS: %0d allocated, %0d trapped to the GC vector", n_cons, n_gc);
         $display("   UNEXT, NEXT2, NEXT3: %0d branched, %0d ended", n_loop, n_lend);
+        $display("   INTR %0d, EXC %0d, undefined opcodes (exception 1) %0d", n_intr, n_exc, n_undef);
+        if (n_intr < 50 || n_exc < 50 || n_undef < 20) fail("too few INTR, EXC or undefined opcodes");
         if (n_cons < 50 || n_gc < 20) begin
             fail("too few CONS of one kind");
         end
         for (k = 0; k < 256; k = k + 1)
             if ((k <= 8'h2F || (k >= 8'h31 && k <= 8'h33) || k == 8'h47 || k == 8'h87 || k == 8'h30 || k == 8'h46 || k == 8'h86 || k == 8'hC6 || k == 8'h40 || k == 8'h41 || k == 8'h42 || k == 8'h43 || k == 8'h44 ||
                  (k >= 8'h50 && k <= 8'h57) || k == 8'h80 || k == 8'h81 || k == 8'h83 || k == 8'h84 || k == 8'h85 || (k >= 8'h90 && k <= 8'h97) || k == 8'h82 || k >= 8'hC0 && k <= 8'hC2 || k == 8'hC4 || k == 8'hC5 || k >= 8'hD0 && k <= 8'hD7 ||
-                 k == 8'h48 || k == 8'h88 || k == 8'hC8)
-                && count[k] < ((k == 8'h01 || k == 8'h1F) ? 25 : 50)) begin   // RET, EXC: kept rare on purpose
+                 k == 8'h48 || k == 8'h88 || k == 8'hC8 || (k >= 8'h34 && k <= 8'h36) || k == 8'h49 || k == 8'h4A)
+                && count[k] < ((k == 8'h01 || k == 8'h1F || k == 8'h36) ? 25 : 50)) begin   // RET, EXEC, RTI: kept rare on purpose
                 fail("an opcode ran too rarely");
                 $display("   opcode %h: %0d times", k, count[k]);
             end

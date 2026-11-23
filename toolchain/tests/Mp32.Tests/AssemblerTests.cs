@@ -552,4 +552,35 @@ public class AssemblerTests
     [Fact]
     public void HeapLimitIsAStage3Register() =>
         Assert.Contains(Asm.Errors("  ADD2 FP, HLIM\n"), e => e.Contains("at most one"));
+
+    [Theory]
+    [InlineData("INTR 0", "49 00")]
+    [InlineData("INTR 48", "49 30")]
+    [InlineData("INTR $FF", "49 FF")]
+    [InlineData("EXC 1", "4A 01")]
+    [InlineData("EXC 255", "4A FF")]
+    [InlineData("CLI", "34")]
+    [InlineData("SEI", "35")]
+    [InlineData("RTI", "36")]
+    [InlineData("EXEC", "1F")]
+    public void InterruptsAndExceptions(string line, string bytes) =>
+        Assert.Equal(bytes, Asm.Hex(Asm.Code($"  {line}\n")[..((bytes.Length + 1) / 3)]));
+
+    [Theory]
+    [InlineData("INTR 256", "out of range")]
+    [InlineData("INTR -1", "out of range")]
+    [InlineData("EXC", "operand")]
+    public void InterruptNumberErrors(string line, string error) =>
+        Assert.Contains(Asm.Errors($"  {line}\n"), e => e.Contains(error));
+
+    [Theory]
+    [InlineData("MOVR VEC, T", "43 2C")]
+    [InlineData("MOVR T, VEC", "43 6C")]
+    [InlineData("MOV2 VEC, r3", "83 2C 03")]
+    public void VectorRegister(string line, string bytes) =>
+        Assert.Equal(bytes, Asm.Hex(Asm.Code($"  {line}\n")[..((bytes.Length + 1) / 3)]));
+
+    [Fact]
+    public void VectorRegisterIsAStage3Register() =>
+        Assert.Contains(Asm.Errors("  ADD2 FP, VEC\n"), e => e.Contains("at most one"));
 }

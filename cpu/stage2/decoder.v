@@ -15,6 +15,7 @@ module decoder (
     input  wire [31:0] f_instr,
     input  wire [2:0]  f_len,
     input  wire [1:0]  d_step,
+    input  wire        f_inject,       // the instruction is not from memory (fetch.v)
 
     output reg  [31:0] a_const,        // operand A's constant (when d_a_use = 0)
     output reg  [31:0] b_const,        // operand B's constant (when d_b_use = 0)
@@ -31,7 +32,7 @@ module decoder (
     output reg         d_b_s3,
     output reg         d_b_imm,
     output reg  [31:0] d_imm,
-    output reg  [2:0]  d_s3,
+    output reg  [3:0]  d_s3,
     output reg  [2:0]  d_res,
     output reg         d_wen,
     output reg  [5:0]  d_rd,
@@ -59,7 +60,12 @@ module decoder (
     output reg         d_tgt,
     output reg         d_trap,         // CONS step 0: trap unless L <= HLIM
     output reg         d_hl_we,       // HLIM = r
-    output reg         d_loop         // UNEXT, NEXT2, NEXT3: branch to d_imm if operand B != 0
+    output reg         d_loop,        // UNEXT, NEXT2, NEXT3: branch to d_imm if operand B != 0
+    output reg         d_vec,         // INTR, EXC: a call through the vector table
+    output reg         d_hw,          // an INTR injected by fetch (a device's interrupt)
+    output reg  [1:0]  d_ie,          // the I flag: 01 = 0 (CLI), 10 = 1 (SEI, RTI)
+    output reg         d_vec_we,      // VEC = r
+    output wire        d_undef        // the opcode (byte 0) is not defined: exception 1
 );
     // ================================================================ names
     localparam [4:0] A_ADD = 0, A_ADC = 1, A_SUB = 2, A_SBC = 3, A_AND = 4, A_OR = 5,
@@ -91,7 +97,7 @@ module decoder (
     wire [5:0] reg6 = b1[5:0];
     wire       in_file = !reg6[5] | (reg6[4:2] == 3'b000);   // r0 .. r31, T, S, R, L
     // the registers of stage 3 and PC: 0 PSP, 1 RSP, 2 FP, 3 PC, 4 TMPL, 5 TMPH, 6 ST,
-    // 7 HLIM, 15 none
+    // 7 HLIM, 8 VEC, 15 none
     localparam [3:0] NONE = 4'd15;
     function [3:0] s3w_of(input [5:0] g);
         case (g)
@@ -99,6 +105,7 @@ module decoder (
             6'b100111: s3w_of = 3;   6'b101000: s3w_of = 4;   6'b101001: s3w_of = 5;
             6'b101010: s3w_of = 6;                                // ST
             6'b101011: s3w_of = 7;                                // HLIM
+            6'b101100: s3w_of = 8;                                // VEC
             default:   s3w_of = NONE;
         endcase
     endfunction
@@ -220,6 +227,23 @@ module decoder (
     wire [31:0] lit24 = {{ 8{b3[7]}}, b3, b2, b1};
     wire [31:0] local_ = {f_pc[31:4], b1[3:0]};   // CJMPL
 
+    // ================================================================ undefined opcodes
+    // Byte 0 alone: an opcode that is not in the instruction set. (An opcode that is
+    // defined but has bits in its other bytes that are not, e.g. MOVR with a register
+    // that does not exist, does nothing, as before.)
+    function defined_op(input [7:0] o);
+        case (o)
+            8'h40, 8'h41, 8'h42, 8'h43, 8'h44, 8'h46, 8'h47, 8'h48, 8'h49, 8'h4A,
+            8'hC0, 8'hC1, 8'hC2, 8'hC4, 8'hC5, 8'hC6, 8'hC8:  defined_op = 1'b1;
+            default: defined_op = (o <= 8'h36)                      // NOP .. RTI
+                               | (o >= 8'h50 && o <= 8'h57)        // ADDR .. CMPR
+                               | (o >= 8'h80 && o <= 8'h88)        // LIT16 .. NEXT2
+                               | (o >= 8'h90 && o <= 8'h97)        // ADD2 .. CMP2
+                               | (o >= 8'hD0 && o <= 8'hD7);       // ADD3 .. CMP3
+        endcase
+    endfunction
+    assign d_undef = !defined_op(op);
+
     // ================================================================ the control word
 
     task pop_(input [1:0] st);
@@ -251,13 +275,13 @@ module decoder (
             rd_(T_, RES_Y);
         end
     endtask
-    // read / write a register of stage 3 (s3w 0 PSP 1 RSP 2 FP 4 TMPL 5 TMPH 6 ST 7 HLIM)
+    // read / write a register of stage 3 (s3w 0 PSP 1 RSP 2 FP 4 TMPL 5 TMPH 6 ST 7 HLIM 8 VEC)
     task s3_read(input [3:0] w);
         begin
             // PSP, RSP, FP from their own outputs (d_s3 4 .. 6), not through
             // `stackregs`' sel: sel stays free for a write of another one
-            if (w < 3) d_s3 = 3'd4 + w[2:0];
-            else       d_s3 = (w == 4) ? 3'd1 : (w == 5) ? 3'd2 : (w == 6) ? 3'd3 : 3'd7;
+            if (w < 3) d_s3 = 4'd4 + {2'b00, w[1:0]};
+            else       d_s3 = (w == 4) ? 4'd1 : (w == 5) ? 4'd2 : (w == 6) ? 4'd3 : (w == 7) ? 4'd7 : 4'd8;
         end
     endtask
     task s3_write(input [3:0] w);                  // the value: the result r
@@ -266,7 +290,8 @@ module decoder (
             else if (w == 4) d_tl_we = 1;
             else if (w == 5) d_th_we = 1;
             else if (w == 6) d_st_we = 1;
-            else             d_hl_we = 1;
+            else if (w == 7) d_hl_we = 1;
+            else             d_vec_we = 1;
         end
     endtask
 
@@ -280,6 +305,7 @@ module decoder (
         d_sp_sel = PSP; d_sp_op = SP_BASE; d_tmp_we = 0; d_tmp_src = 0;
         d_tl_we = 0; d_th_we = 0; d_th_y2 = 0; d_tl_shl = 0; d_tl_shr = 0; d_st_we = 0;
         d_jump = 0; d_cond = 0; d_tgt = 0; call = 0; d_trap = 0; d_hl_we = 0; d_loop = 0;
+        d_vec = 0; d_hw = 0; d_ie = 2'b00; d_vec_we = 0;
 
         case (op)
         // ---------------------------------------------------- stack
@@ -329,7 +355,7 @@ module decoder (
                      d_tl_shr = 1; rd_(T_, RES_Y); end
         8'h1E: begin ra(S_); rb(T_); d_alu_op = A_SUB; d_cin = CIN_1;              // CMP
                      d_fmask = 4'b1111; end
-        8'h1F: begin ra(R_); b_const = next; jump_(ALWAYS, 0);                    // EXC (next = PC + 1)
+        8'h1F: begin ra(R_); b_const = next; jump_(ALWAYS, 0);                    // EXEC (next = PC + 1)
                      rd_(R_, RES_B); end
         // ---------------------------------------------------- shifts, rotates
         8'h20: shift1(A_ASL);   8'h21: shift1(A_ASR);   8'h22: shift1(A_LSL);
@@ -350,10 +376,9 @@ module decoder (
         8'h31: case (d_step)                                                       // CONS
                2'd0: begin                                                         // the check: HLIM - L, C = (L <= HLIM)
                    ra(L_); d_b_s3 = 1; d_s3 = 3'd7; d_alu_op = A_RSB; d_cin = CIN_1;
-                   // if it traps (C = 0): a call to the GC vector that comes back to
-                   // this CONS: push R, R = the CONS's own address. Execute does these
-                   // only when it traps.
-                   d_trap = 1; rb(R_); push_(RSP, 1); d_imm = f_pc; rd_(R_, RES_IMM);
+                   // if it traps (C = 0): exception 4. Execute sends fetch back to this
+                   // CONS (d_imm), which injects EXC 4 there. Nothing else happens.
+                   d_trap = 1; d_imm = f_pc;
                end
                2'd1: begin                                                         // the word at L - 1 = S (the car)
                    ra(L_); d_b_imm = 1; d_imm = 32'hFFFF_FFFF;
@@ -372,6 +397,22 @@ module decoder (
                endcase
         8'h32: binop(A_TADD, CIN_0);                                               // TADD
         8'h33: binop(A_TSUB, CIN_1);                                               // TSUB
+        // ---------------------------------------------------- interrupts, exceptions
+        8'h34: d_ie = 2'b01;                                                       // CLI: I = 0
+        8'h35: d_ie = 2'b10;                                                       // SEI: I = 1
+        8'h36: begin ra(R_); jump_(ALWAYS, 0); pop_(RSP); rd_(R_, RES_Y);          // RTI: RET, I = 1
+                     d_ie = 2'b10; end
+        // INTR n, EXC n: a call to VEC + 4n (execute: {VEC[31:10], operand A[9:0]}):
+        // push R, R = the return address (d_imm). It is the next instruction for INTR
+        // from memory; the instruction itself (f_pc) for EXC, and for an INTR that fetch
+        // injected (the interrupted instruction). An injected INTR is checked again in
+        // execute (d_hw): see execute.v.
+        8'h49, 8'h4A: begin
+                   a_const = {22'h0, b1, 2'b00}; d_vec = 1;
+                   d_hw = f_inject & !op[1];
+                   rb(R_); push_(RSP, 1);
+                   d_imm = (op[1] | f_inject) ? f_pc : next; rd_(R_, RES_IMM);
+               end
         // ---------------------------------------------------- SHI, TTAG
         8'h47: if (b1[7:5] <= 3'd4) begin                                          // SHI: T shifted by b1[4:0]
                    ra(T_); b_const = {27'h0, b1[4:0]}; d_cin = CIN_C; d_fmask = 4'b1111;

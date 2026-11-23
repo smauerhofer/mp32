@@ -11,13 +11,13 @@
 // holds decode at random (hold), redirects at random to the start of an instruction
 // (only when decode is at step 0, as a branch in execute would; and right after step 0
 // of a CONS, as its trap does), and makes interrupts pending at random (it
-// acknowledges after the 3 instructions of the placeholder sequence and jumps to a
-// random instruction a few ticks later).
+// acknowledges after the injected INTR and jumps to a random instruction a few ticks
+// later).
 //
 // Every issued step is checked: instructions come in program order, one step for an
 // ordinary one, steps 0, 1 for ROT and DROT, steps 0 .. 3 for CONS, and between the
 // steps of one instruction nothing else comes out, not even an instruction of the
-// interrupt sequence. A CONS that traps after step 0 starts the next instruction at
+// injected INTR. A CONS that traps after step 0 starts the next instruction at
 // step 0. The test also counts how often an interrupt was pending while a later step
 // was waiting, to show that the case was really tried.
 
@@ -53,9 +53,11 @@ module sequencer_tb;
 
     fetch #(.RESET_PC(32'h0000_0000)) fe (
         .clk(clk), .reset(reset),
-        .redirect(redirect), .redirect_pc(redirect_pc), .irq_pending(irq_pending),
+        .redirect(redirect), .redirect_pc(redirect_pc),
+        .redirect_exc(1'b0), .redirect_exc_n(8'h0),
+        .irq_pending(irq_pending), .irq_num(8'h10),
         .stall(stall), .f_valid(f_valid), .f_pc(f_pc), .f_instr(f_instr), .f_len(f_len),
-        .f_inject(f_inject),
+        .f_inject(f_inject), .f_next_instr(), .f_load(),
         .line_sel(line_sel), .line_addr(line_addr), .line_data(line_data),
         .line_ready(line_ready), .pc(pc)
     );
@@ -159,8 +161,8 @@ module sequencer_tb;
         // ---- the rest of the pipeline, played at random
         redirect <= 0;
         hold     <= ($random(seed) & 3) == 0;
-        // the interrupt sequence: acknowledge after its 3 instructions, then the jump
-        if (irq_pending && n_seq >= 3) begin
+        // the injected INTR: acknowledge (I = 0), then the jump
+        if (irq_pending && n_seq >= 1) begin
             irq_pending <= 0; jump_in = 2 + ($random(seed) & 3);
         end
         if (trap_now) begin                                            // CONS's trap

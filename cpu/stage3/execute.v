@@ -7,7 +7,8 @@
 //   stackregs.v  PSP, RSP, FP
 //   scratch.v    TMP (for the two steps of ROT, DROT)
 //   tmplh.v      TMPL, TMPH
-//   (here)       HLIM, the heap limit of CONS
+//   (here)       HLIM, the heap limit of CONS; VEC, the vector table; I, the
+//                interrupt flag
 //
 // and stage 3's output registers x_* for stage 4, and the redirect for fetch.
 //
@@ -28,13 +29,14 @@
 //
 //   the stage 3 value (s3) and the result (r)
 //   d_s3        s3 = 0: d_imm, 1: TMPL, 2: TMPH,
-//               3: ST = {28'h0, the flags V N Z C}, 4: PSP, 5: RSP, 6: FP (read
+//               3: ST = {27'h0, I, the flags V N Z C}, 4: PSP, 5: RSP, 6: FP (read
 //               from `stackregs`' own outputs, not through sel: so an instruction can
-//               read one of them and write another, e.g. MOV2 FP, PSP), 7: HLIM
+//               read one of them and write another, e.g. MOV2 FP, PSP), 7: HLIM,
+//               8: VEC
 //   d_res       r = 0: ALU y, 1: operand A, 2: operand B, 3: s3, 4: TMP,
 //               5: ALU y with TMPL[31] in bit 0 (DIVS),
 //               6: the ALU's flags {V, N, Z, C} in bits 3..0, 0 above (CMP3),
-//               7: d_imm (CONS: its own address, the return address of the trap)
+//               7: d_imm (a return address: INTR, EXC)
 //
 //   register writes (through stages 4 and 5)
 //   d_wen, d_rd                 the main write: register d_rd = r (or the loaded word)
@@ -56,6 +58,8 @@
 //   d_st_we             ST = r: the flags = r[3:0] (bits 31..4 are dropped). This wins
 //                       over the flags the ALU sets (d_fmask) in the same instruction
 //   d_hl_we             HLIM = r (the heap limit; reset clears it)
+//   d_vec_we            VEC = r, bits 9..0 dropped (the vector table: 1 KB aligned)
+//   d_ie                I = 0 (01: CLI) or 1 (10: SEI, RTI); reset clears it
 //
 //   jumps
 //   d_jump, d_cond      a jump if the condition holds (cond.v; TZ: operand B == 0)
@@ -66,10 +70,21 @@
 //                       jump, and the write takes effect only with the load (R
 //                       popped); otherwise nothing changes
 //   d_trap              step 0 of CONS: the ALU works out HLIM - L. When it borrows
-//                       (C = 0: L > HLIM, the heap is full) the instruction traps: it
-//                       jumps to GC_VECTOR and its store, its register write and its
-//                       `stackregs` op (push R, R = d_imm) take effect. When it does not
-//                       borrow, none of them does: the step is a bubble.
+//                       (C = 0: L > HLIM, the heap is full) the CONS raises exception
+//                       4: a redirect back to the CONS (d_imm, its address) with
+//                       redirect_exc = 1, redirect_exc_n = 4, and fetch injects EXC 4
+//                       there (the call to VEC + 16 is the EXC's). The redirect throws
+//                       away steps 1 .. 3. When it does not borrow, the step is a
+//                       bubble. It writes nothing either way.
+//   d_vec               INTR n, EXC n: a jump to VEC + 4n = {VEC[31:10], operand A[9:0]}
+//                       (decode puts 4n on operand A), with the store, the register
+//                       write and the `stackregs` op (push R, R = d_imm).
+//   d_hw                an INTR that fetch injected for a device. It was injected a few
+//                       ticks ago; since then an older instruction may have cleared I
+//                       or served the device. So it is taken only if irq is still 1,
+//                       I is 1 and irq_num is still its number; then I = 0. If not,
+//                       it does nothing but jump back to its return address (d_imm,
+//                       the instruction it came before): fetch goes on there.
 //
 // ---------------------------------------------------------------- the short result
 // The registers of stage 3 (PSP, RSP, FP, TMPL, TMPH, ST, HLIM), the jumps through the
@@ -99,7 +114,7 @@
 // `advance` tells decode that stage 3 takes its instruction at this edge.
 
 module execute #(
-    parameter [31:0] GC_VECTOR = 32'hF000_0010    // where CONS traps to (the second line of the boot RAM)
+    parameter [31:0] VEC_RESET = 32'hF000_0000    // VEC after reset: the vector table in the boot RAM
 ) (
     input  wire        clk,
     input  wire        reset,          // synchronous, active high
@@ -121,7 +136,7 @@ module execute #(
     input  wire        d_b_s3,
     input  wire        d_b_imm,
     input  wire [31:0] d_imm,
-    input  wire [2:0]  d_s3,
+    input  wire [3:0]  d_s3,
     input  wire [2:0]  d_res,
     input  wire        d_wen,
     input  wire [5:0]  d_rd,
@@ -150,6 +165,14 @@ module execute #(
     input  wire        d_trap,
     input  wire        d_hl_we,
     input  wire        d_loop,
+    input  wire        d_vec,
+    input  wire        d_hw,
+    input  wire [1:0]  d_ie,
+    input  wire        d_vec_we,
+
+    // ---- the interrupt request (for the check of an injected INTR)
+    input  wire        irq,
+    input  wire [7:0]  irq_num,
 
     output wire        advance,        // stage 3 takes decode's instruction at the edge
 
@@ -180,6 +203,8 @@ module execute #(
     // ---- to fetch (and decode): a jump taken
     output wire        redirect,
     output wire [31:0] redirect_pc,
+    output wire        redirect_exc,   // with redirect: an exception; fetch injects
+    output wire [7:0]  redirect_exc_n, // EXC redirect_exc_n at redirect_pc
 
     // ---- the registers of stage 3, to look at
     output wire [3:0]  flags_out,      // {V, N, Z, C}
@@ -188,12 +213,16 @@ module execute #(
     output wire [31:0] fp,
     output wire [31:0] tmpl,
     output wire [31:0] tmph,
-    output wire [31:0] hlim
+    output wire [31:0] hlim,
+    output wire [31:0] vec,
+    output wire        ie,             // the I flag: interrupts on
+    output wire        ie_off          // an INTR from a device or CLI is here: I may go to 0
 );
     // ================================================================ the control word, held
     reg [4:0]  e_alu_op;   reg [1:0] e_cin;    reg [3:0] e_fmask;
     reg        e_a_tmpl, e_b_s3, e_b_imm;      reg [2:0] e_s3;     reg [2:0] e_res;
     reg [31:0] e_imm;
+    reg        e_vec, e_hw, e_vec_we;  reg [1:0] e_ie;
     reg        e_wen;      reg [5:0] e_rd;
     reg        e_x2_wen;   reg [1:0] e_x2_sel; reg [1:0] e_x2;
     reg        e_load, e_store, e_signed, e_wdata, e_addr;         reg [1:0] e_size;
@@ -203,7 +232,7 @@ module execute #(
     reg        e_trap, e_hl_we, e_loop;
     reg        e_bsel;                 // ALU input b = s3 (a register of stage 3, or d_imm)
     reg        e_short;                // an adder or logic op: its results from ya, flags_s
-    reg [7:0]  e_s3h;                  // d_s3 one-hot: bit k = s3 is source k (timing)
+    reg [8:0]  e_s3h;                  // d_s3 one-hot: bit k = s3 is source k (timing)
 
     // ================================================================ the operands
     wire        e_valid, load_use;
@@ -236,18 +265,22 @@ module execute #(
             e_tl_shl <= d_tl_shl;  e_tl_shr <= d_tl_shr;  e_st_we <= d_st_we;
             e_jump <= d_jump;      e_cond <= d_cond;      e_tgt <= d_tgt;
             e_trap <= d_trap;      e_hl_we <= d_hl_we;    e_loop <= d_loop;
+            e_vec <= d_vec;        e_hw <= d_hw;          e_ie <= d_ie;     e_vec_we <= d_vec_we;
             e_bsel <= d_b_s3 | d_b_imm;
-            e_s3h  <= 8'b1 << d_s3;
+            e_s3h  <= 9'b1 << d_s3;
             e_short <= (d_alu_op <= 5'd6) | (d_alu_op == 5'd26) | (d_alu_op == 5'd27);
         end
 
     // the instruction in execute takes effect at this edge
     wire go = e_valid & advance;
 
-    // CONS step 0: its effects (and the jump) only when it traps; trap is the ALU's
-    // borrow of HLIM - L (wired below)
+    // CONS step 0: exception 4 when the ALU borrows on HLIM - L (wired below)
     wire trap;
-    wire act = !e_trap | trap;          // the store, the write, the stack op take effect
+    reg        ie_r;                    // I (below)
+    reg [31:10] vec_r;                  // VEC (below)
+    // an INTR from fetch: taken only if the interrupt is still wanted (see d_hw)
+    wire refuse = e_hw & !(irq & ie_r & (irq_num == e_a[9:2]));
+    wire act = !refuse;                 // the store, the write, the stack op take effect
 
     // UNEXT, NEXT2, NEXT3: the counter (operand B) is not 0: branch, write counter - 1,
     // and no load or stack op (they pop R when the loop ends). When it is 0: no
@@ -299,17 +332,37 @@ module execute #(
         else if (go & e_hl_we)      hlim_r <= rs;
     assign hlim = hlim_r;
 
+    // VEC: the vector table, 1 KB aligned (bits 9..0 are 0)
+    always @(posedge clk)
+        if (reset)                  vec_r <= VEC_RESET[31:10];
+        else if (go & e_vec_we)     vec_r <= rs[31:10];
+    assign vec = {vec_r, 10'h000};
+
+    // I: interrupts on. An INTR taken for a device clears it; CLI clears it, SEI and
+    // RTI set it.
+    always @(posedge clk)
+        if (reset)                          ie_r <= 1'b0;
+        else if (go & e_hw & !refuse)       ie_r <= 1'b0;
+        else if (go & e_ie[0])              ie_r <= 1'b0;
+        else if (go & e_ie[1])              ie_r <= 1'b1;
+    assign ie = ie_r;
+    // for the request to fetch (cpu.v): I is 1, but the instruction here may clear it at
+    // this edge; without this, fetch would inject another INTR right behind an INTR
+    // taken, which execute would only turn down
+    assign ie_off = e_valid & (e_hw | e_ie[0]);
+
     // ================================================================ the ALU
     // s3, picked with the one-hot e_s3h (decoded from d_s3 as it is held): an AND-OR,
     // so each source goes through one level of gates, not a tree of multiplexers
     wire [31:0] s3 = ({32{e_s3h[0]}} & e_imm)             // d_imm
                    | ({32{e_s3h[1]}} & tmpl)
                    | ({32{e_s3h[2]}} & tmph)
-                   | ({32{e_s3h[3]}} & {28'h0, f})        // ST
+                   | ({32{e_s3h[3]}} & {27'h0, ie_r, f})  // ST
                    | ({32{e_s3h[4]}} & psp)
                    | ({32{e_s3h[5]}} & rsp)
                    | ({32{e_s3h[6]}} & fp)
-                   | ({32{e_s3h[7]}} & hlim_r);
+                   | ({32{e_s3h[7]}} & hlim_r)
+                   | ({32{e_s3h[8]}} & {vec_r, 10'h000});
 
     reg cin;
     always @*
@@ -334,7 +387,7 @@ module execute #(
             3'd3: r = s3;
             3'd4: r = tmp;
             3'd6: r = {28'h0, flags_a};                 // CMP3 (a SUB)
-            3'd7: r = e_imm;                            // CONS's trap: the return address
+            3'd7: r = e_imm;                            // a return address (CONS's trap, INTR, EXC)
             default: r = {y[31:1], y[0] | tmpl[31]};   // DIVS
         endcase
 
@@ -359,8 +412,13 @@ module execute #(
     cond cnd (.cond(e_cond), .f(f), .tz(tz), .take(take));
 
     assign trap        = e_trap & !flags_a[0];
-    assign redirect    = go & (e_jump & take | trap | ltake);
-    assign redirect_pc = e_trap ? GC_VECTOR : e_loop ? e_imm : e_tgt ? ya : e_a;
+    assign redirect    = go & (e_jump & take | trap | ltake | e_vec);
+    // exceptions found here: so far only CONS's (4)
+    assign redirect_exc   = e_trap;
+    assign redirect_exc_n = 8'd4;
+    assign redirect_pc = e_trap ? e_imm :                              // back to the CONS: EXC 4
+                         e_vec  ? (refuse ? e_imm : {vec_r, e_a[9:0]}) :
+                         e_loop ? e_imm : e_tgt ? ya : e_a;
 
     // ================================================================ to stage 4
     always @(posedge clk)

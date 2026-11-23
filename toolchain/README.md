@@ -62,7 +62,10 @@ MSBuild understand.
 All the opcodes of `cpu/isa.md`, with the syntax given there:
 
     NOP RET DUP DROP SWAP OVER DIP NIP TUCK DRIP PUSH POP PUSHS POPS ROT DROT
-    ADD ADC SUB SBC CSUB DIVS MUL SMUL AND OR XOR INV NEG MULS CMP EXC
+    ADD ADC SUB SBC CSUB DIVS MUL SMUL AND OR XOR INV NEG MULS CMP EXEC
+    CLI SEI RTI             I = 0 / I = 1 / RET and I = 1 (interrupts)
+    INTR n      EXC n       interrupt / exception n (0..255): a call to VEC + 4n;
+                            R = the next instruction (INTR) or the EXC itself
     ASL ASR LSL LSR ROL ROR ROLC RORC
     INC DEC INCW DECW
     ENTER n  ENTER2 n  ENTER3 n     a stack frame: push FP on the return stack, FP =
@@ -110,8 +113,9 @@ All the opcodes of `cpu/isa.md`, with the syntax given there:
     TTAG mask, value        Z = ((T & mask) == value), constants 0..$FF
 
 Conditions: `EQ NE CS/HS CC/LO MI PL VS VC HI LS GE LT GT LE A TZ`.
-Registers for MOVR, ADDR .. CMPR, ADD2 .. CMP2 and ADD3 .. CMP3: `r0`..`r31`, `T S R L PSP RSP FP PC TMPL TMPH ST HLIM` (ST: the flags, bits 3..0 = V N Z C; HLIM:
-the heap limit of CONS).
+Registers for MOVR, ADDR .. CMPR, ADD2 .. CMP2 and ADD3 .. CMP3: `r0`..`r31`, `T S R L PSP RSP FP PC TMPL TMPH ST HLIM VEC` (ST: the flags, bits 3..0 = V N Z C, bit 4
+the interrupt flag I; HLIM: the heap limit of CONS; VEC: the vector table, 1 KB
+aligned). EXEC was called EXC before; EXC is now the exception.
 
 For a branch or call, a label is turned into the offset from the next
 instruction (for CJMPL and UNEXT: the label's offset in the line); a plain number is put
