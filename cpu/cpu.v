@@ -14,7 +14,8 @@
 //   data_*   memory access reads and writes bytes, halfwords and words (memsys's d_*)
 //
 // and the interrupt request: irq = 1 while a device wants an interrupt, irq_num its
-// number (the interrupt controller, ../computer/irqc.v). While irq is 1 and the I flag
+// number (the interrupt controller, irqc.v, which gets irq_ack / irq_ack_num back when
+// the processor takes it, to mark it in service). While irq is 1 and the I flag
 // is 1, fetch injects INTR irq_num (stage1/fetch.v); execute checks again that it is
 // still wanted when the INTR gets there (stage3/execute.v). The registers T, S, R, L,
 // PSP, RSP, FP and the flags come out to be looked at (by a test bench, or LEDs).
@@ -31,6 +32,8 @@ module cpu #(
     input  wire         reset,          // synchronous, active high
     input  wire         irq,            // a device wants an interrupt
     input  wire [7:0]   irq_num,        // its number (the vector)
+    output wire         irq_ack,        // that INTR is taken (for one tick) ...
+    output wire [7:0]   irq_ack_num,    // ... with this number: the controller marks it in service
 
     // ---- fetch: lines of code
     output wire         line_sel,
@@ -170,7 +173,7 @@ module cpu #(
         .redirect(ex_redirect), .redirect_pc(ex_redirect_pc),
         .redirect_exc(ex_redirect_exc), .redirect_exc_n(ex_redirect_exc_n),
         .flags_out(flags), .psp(psp), .rsp(rsp), .fp(fp), .tmpl(), .tmph(), .hlim(),
-        .vec(), .ie(ie), .ie_off(ie_off)
+        .vec(), .ie(ie), .ie_off(ie_off), .irq_ack(irq_ack), .irq_ack_num(irq_ack_num)
     );
 
     // ---------------------------------------------------------------- stage 4

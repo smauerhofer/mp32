@@ -403,7 +403,18 @@ part that plays decode); the real decode will make the same.
   fetch, which injects `EXC n` there (decode adds its own, exception 1).
 - Outputs for cpu.v: `ie` (I) and `ie_off` (a device's INTR or CLI is in execute: I
   may go to 0 at this edge), which keep fetch from injecting an INTR right behind one
-  taken.
+  taken; `irq_ack`, `irq_ack_num`: a device's INTR is taken at this edge, for the
+  interrupt controller's in-service bits.
+
+### The interrupt controller (`irqc.v`)
+
+Eight lines from the devices (levels), MASK, and the in-service bits ISR: the
+processor is offered the line of the highest priority (lowest number) that asks, is
+not masked, and is above every line in service (`irq`, `irq_num` = 16 + the line).
+`irq_ack` from execute puts the line in service; a write to EOI takes the highest
+one in service out. So handlers can nest by priority (see isa.md). Registers: +0
+PENDING, +4 MASK, +8 NUMBER, +12 ISR / EOI. A write must reach it once per access
+(the I/O decoder gives it only the first tick).
 - **go** = the instruction in execute takes effect at this edge (valid, no stall
   from stage 4, no load-use wait). The registers of stage 3 are written at that
   edge, so the next instruction sees them with no forwarding.
@@ -436,7 +447,11 @@ two devices that interrupt at random (about 5,000 times). The program uses the f
 between instructions, calls, stack frames, CONS with its trap, a critical section
 (CLI .. SEI), a system call (INTR 48), an undefined opcode, EXC 3, and moves VEC
 halfway. Both must end with the same registers and memory; every interrupt must be
-handled once, none inside the critical section.
+handled once, none inside the critical section. The devices go through the real
+interrupt controller (`irqc.v`); the handlers set I again while they wait, so device
+0's handler nests inside device 1's (about 1,700 times), never the other way round,
+and no handler is interrupted by its own device. (With the in-service blocking taken
+out of the controller, the test fails thousands of times.)
 
 Forwarding: the operand forwarded from `x_result` is taken only when `x_wen` is 1.
 The choice is made a tick early from `e_wen`, but execute can still drop the write
@@ -731,8 +746,7 @@ critical path is from TMPL / the stack pointers through the ALU's adder to
 - The I/O devices on the I/O range (keyboard, mouse, video registers, ...), and an
   I/O decoder behind `io_*`.
 - The boot program for the block RAM (a `$readmemh` file for `BRAM_INIT`).
-- Interrupts in the boot program: handlers for the serial port and the sound
-  (vectors 16, 17); now the vector table sends them to "unexpected" and I stays 0.
+- A handler for the sound in the boot program (vector 18; it needs samples to play).
 - More exceptions: a misaligned or unmapped address (execute has the address before
   the access), divide by zero. A bus error in stage 4 would come too late to be
   precise (the instruction has already changed PSP / RSP in stage 3).

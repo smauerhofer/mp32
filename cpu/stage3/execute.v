@@ -216,7 +216,9 @@ module execute #(
     output wire [31:0] hlim,
     output wire [31:0] vec,
     output wire        ie,             // the I flag: interrupts on
-    output wire        ie_off          // an INTR from a device or CLI is here: I may go to 0
+    output wire        ie_off,         // an INTR from a device or CLI is here: I may go to 0
+    output wire        irq_ack,        // a device's INTR is taken at this edge ...
+    output wire [7:0]  irq_ack_num     // ... with this number (for the controller's in-service bits)
 );
     // ================================================================ the control word, held
     reg [4:0]  e_alu_op;   reg [1:0] e_cin;    reg [3:0] e_fmask;
@@ -350,6 +352,10 @@ module execute #(
     // this edge; without this, fetch would inject another INTR right behind an INTR
     // taken, which execute would only turn down
     assign ie_off = e_valid & (e_hw | e_ie[0]);
+
+    // to the interrupt controller: which device's interrupt is being served now
+    assign irq_ack     = go & e_hw & !refuse;
+    assign irq_ack_num = e_a[9:2];
 
     // ================================================================ the ALU
     // s3, picked with the one-hot e_s3h (decoded from d_s3 as it is held): an AND-OR,

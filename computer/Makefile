@@ -19,7 +19,7 @@ TOOLS   ?= ../toolchain/bin
 AS       = $(TOOLS)/mp32as
 LD       = $(TOOLS)/mp32ld
 
-CPU = ../cpu/cpu.v \
+CPU = ../cpu/cpu.v ../cpu/irqc.v \
       ../cpu/stage1/fetch.v ../cpu/stage1/pc.v ../cpu/stage1/irq_sequence.v \
       ../cpu/stage2/decode.v ../cpu/stage2/decoder.v ../cpu/stage2/regfile.v \
       ../cpu/stage2/sequencer.v \

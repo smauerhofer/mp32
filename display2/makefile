@@ -1,7 +1,10 @@
 # The video unit, with its screen in the SDRAM: test it, and see what the chip makes
 # of it.
-#   make test          run the test bench, at 100 MHz (writes mixed.bmp, text.bmp,
-#                      graphics.bmp, shape.bmp and scrolled.bmp into build/)
+#   make test          run the test benches: the picture at 100 MHz (writes
+#                      mixed.bmp, text.bmp, graphics.bmp, shape.bmp and scrolled.bmp
+#                      into build/), then the interrupts
+#   make test-irq      only the interrupts (video_irq_tb.v: the line and the frame
+#                      interrupt)
 #   make test-clocks   run it at 42 (the processor's clock), 54 and 100 MHz
 #   make size          synthesize the video unit alone and count what it takes
 #   make data          make palette.hex, fonts.hex, text.hex, pixels.hex and
@@ -19,7 +22,14 @@ MODELS = $(CACHE)/sdram_model.v
 DATA   = $(BUILD)/fonts.hex $(BUILD)/palette.hex $(BUILD)/text.hex $(BUILD)/pixels.hex \
          $(BUILD)/modes.hex
 
-test: test-video
+test: test-video test-irq
+
+$(BUILD)/video_irq_tb.vvp: video_irq_tb.v video.v
+	mkdir -p $(BUILD)
+	iverilog -g2005 -s video_irq_tb -o $@ $^
+
+test-irq: $(BUILD)/video_irq_tb.vvp
+	cd $(BUILD) && vvp video_irq_tb.vvp
 
 $(BUILD)/%.hex: %.hex
 	mkdir -p $(BUILD)

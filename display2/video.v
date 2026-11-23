@@ -65,6 +65,16 @@
 //                       the top row of a character in bits 7..0 of its first word.
 //   0x30020             text_base   (bits 31..23 are kept but do not count)
 //   0x30024             pixel_base
+//   0x30028             IRQ_LINE    bits 9..0: the line (0 - 524) of the line interrupt
+//   0x3002C             IRQ_CTRL    bit 0 LIE: the line interrupt on
+//                                   bit 1 FIE: the frame interrupt on
+//                                   bit 2 EVERY: the line interrupt on every line, not
+//                                         only IRQ_LINE
+//   0x30030             IRQ_STATUS  read: bit 0 LINE, bit 1 FRAME: the interrupts that
+//                                   happened (whether on or not); write: a 1 clears
+//                                   that bit
+//   0x30034             LINE        read: the line of the last line interrupt (or the
+//                                   last line, with EVERY)
 //   0x30400 - 0x307FF   palette: 256 words, 0x00BBGGRR: red in bits 7..0, green in
 //                       15..8, blue in 23..16. Write only (reads give 0: the display
 //                       reads the palette in every tick).
@@ -82,6 +92,25 @@
 // display reads the font in 1 of the 8 ticks of every 8-pixel cell; a read of the
 // processor takes another. The request crosses to the pixel clock and the answer
 // comes back, through two flip-flops each way.
+//
+// ---------------------------------------------------------------- interrupts
+// Two of them, each with a flag that holds it until the handler clears it (a write of
+// 1 to its bit of IRQ_STATUS), so each is a level for the interrupt controller:
+//
+//   the line interrupt   at the end of the visible pixels (x = 640) of line IRQ_LINE,
+//                        or of every line with EVERY: the horizontal blank follows,
+//                        160 pixel ticks (6.35 us, 266 ticks of a 42 MHz processor)
+//                        in which the handler can change the palette, a base or the
+//                        mode RAM for the next line (a raster split)
+//   the frame interrupt  at the end of the visible pixels of line 479: the vertical
+//                        blank follows, 45 lines (1.43 ms) in which to change the
+//                        layout with no frame drawn half one way, half the other
+//
+//   irq_line  = LINE & LIE     irq_frame = FRAME & FIE     (on cpu_clk)
+//
+// The events happen on the pixel clock and cross to cpu_clk through a toggle and two
+// flip-flops each, as the jobs of the fetch do; IRQ_LINE and EVERY go the other way
+// and are best set in the line before they are to count.
 //
 // The registers live on cpu_clk. A base that changes while a frame is drawn takes
 // effect at once; a change of the mode RAM shows from the next row the display has
@@ -136,6 +165,8 @@ module video #(
     input  wire [31:0] cpu_wdata,
     output wire [31:0] cpu_rdata,
     output wire        cpu_ready,
+    output wire        irq_line,        // the line interrupt (a level, on cpu_clk)
+    output wire        irq_frame,       // the frame interrupt
 
     // The SDRAM, through the cache's video port, on cpu_clk
     output reg          mem_req,
@@ -171,6 +202,8 @@ module video #(
     wire write   = cpu_sel & cpu_we;
 
     wire at_bases   = is_regs & (cpu_addr[15:3]  == 13'h0004);   // 0x30020, 0x30024
+    wire at_irq     = is_regs & (cpu_addr[15:4]  == 12'h003)     // 0x30030 - 0x3003F,
+                    | is_regs & (cpu_addr[15:3]  == 13'h0005);   // 0x30028, 0x3002C
     wire at_palette = is_regs & (cpu_addr[15:10] == 6'b000001);  // 0x30400 - 0x307FF
 
     // ---- writes: straight into the write ports, on cpu_clk, a byte where cpu_be is 1
@@ -201,7 +234,47 @@ module video #(
                 else             text_base[8*i +: 8]  <= cpu_wdata[8*i +: 8];
             end
 
-    wire [31:0] regs_value = at_bases ? (cpu_addr[2] ? pixel_base : text_base) : 32'h0;
+    // ---- the interrupts' registers
+    reg  [9:0]  irq_y     = 10'd0;          // IRQ_LINE
+    reg  [2:0]  irq_ctrl  = 3'd0;           // EVERY, FIE, LIE
+    reg  [1:0]  irq_flags = 2'd0;           // FRAME, LINE
+    reg         line_toggle = 0, frame_toggle = 0;   // clk: an event
+    reg  [9:0]  line_y = 10'd0;             // clk: the line of the last line event
+    reg  [2:0]  line_sync = 0, frame_sync = 0;       // cpu_clk: two flip-flops, and the one before
+
+    wire        line_event  = line_sync[2]  != line_sync[1];
+    wire        frame_event = frame_sync[2] != frame_sync[1];
+    wire [5:0]  irq_reg     = cpu_addr[7:2];          // 10 IRQ_LINE, 11 IRQ_CTRL, 12 IRQ_STATUS, 13 LINE
+
+    always @(posedge cpu_clk) begin
+        line_sync  <= {line_sync[1:0],  line_toggle};
+        frame_sync <= {frame_sync[1:0], frame_toggle};
+        if (write & at_irq & cpu_be[0]) case (irq_reg)
+            6'd10: irq_y[7:0] <= cpu_wdata[7:0];
+            6'd11: irq_ctrl   <= cpu_wdata[2:0];
+            default: ;
+        endcase
+        if (write & at_irq & cpu_be[1] & (irq_reg == 6'd10)) irq_y[9:8] <= cpu_wdata[9:8];
+        // the flags: set by an event, cleared by a 1 written; an event wins
+        irq_flags <= (irq_flags & ~((write & at_irq & cpu_be[0] & (irq_reg == 6'd12)) ? cpu_wdata[1:0] : 2'b00))
+                   | {frame_event, line_event};
+    end
+
+    assign irq_line  = irq_flags[0] & irq_ctrl[0];
+    assign irq_frame = irq_flags[1] & irq_ctrl[1];
+
+    reg [31:0] irq_value;
+    always @*
+        case (irq_reg)
+            6'd10:   irq_value = {22'h0, irq_y};
+            6'd11:   irq_value = {29'h0, irq_ctrl};
+            6'd12:   irq_value = {30'h0, irq_flags};
+            6'd13:   irq_value = {22'h0, line_y};    // steady for a line after its event
+            default: irq_value = 32'h0;
+        endcase
+
+    wire [31:0] regs_value = at_bases ? (cpu_addr[2] ? pixel_base : text_base) :
+                             at_irq   ? irq_value : 32'h0;
 
     // ---- reads of the font RAM and the mode RAM: a request crosses to the pixel clock
     // Toggle handshake: the processor side flips request; the display side, once it
@@ -381,6 +454,16 @@ module video #(
             job_pixels <= next_pixels;
             job_y      <= next_y[8:0];
             job_toggle <= ~job_toggle;
+        end
+
+    // ---- the interrupts' events, at the end of a line's visible pixels
+    always @(posedge clk)
+        if (x == 10'd640) begin
+            if (irq_ctrl[2] | (y == irq_y)) begin
+                line_toggle <= ~line_toggle;
+                line_y      <= y;
+            end
+            if (y == 10'd479) frame_toggle <= ~frame_toggle;
         end
 
     // ---- reading the line buffer and the font

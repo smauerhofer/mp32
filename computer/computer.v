@@ -4,8 +4,8 @@
 //   ../cpu/cpu.v                 the processor (the five stages)
 //   ../cpu/stage4/memsys.v       the memory system: the bus, the block RAM with the
 //                                boot program, the cache, the SDRAM controller
-//   iodec.v                      the I/O decoder (the address map of the devices) and
-//                                the interrupt controller
+//   iodec.v                      the I/O decoder (the address map of the devices),
+//                                with the interrupt controller (../cpu/irqc.v)
 //   ../uart/uart.v               the serial port (to the PC, over the USB-C cable)
 //   ../sdcard/sdcard.v           the microSD card
 //   ../audio/audio.v             the sound: I2S to the board's MAX98357A
@@ -78,11 +78,12 @@ module computer #(
     wire [3:0]   data_be;
     wire [31:0]  data_addr, data_wdata, data_rdata;
 
-    wire         irq;               // from the interrupt controller (iodec.v)
-    wire [7:0]   irq_num;
+    wire         irq, irq_ack;      // the interrupt controller (in iodec.v) and back
+    wire [7:0]   irq_num, irq_ack_num;
 
     cpu #(.RESET_PC(32'hF000_0000), .VEC_RESET(32'hF000_0000)) processor (
         .clk(clk), .reset(reset), .irq(irq), .irq_num(irq_num),
+        .irq_ack(irq_ack), .irq_ack_num(irq_ack_num),
         .line_sel(line_sel), .line_addr(line_addr), .line_data(line_data),
         .line_ready(line_ready),
         .data_sel(data_sel), .data_we(data_we), .data_be(data_be), .data_addr(data_addr),
@@ -123,6 +124,7 @@ module computer #(
     wire [12:0] audio_addr;
     wire        uart_irq;           // the serial port: a byte came, or room to send
     wire        audio_irq;          // the sound: the queue half empty, or a bank played
+    wire        line_irq, frame_irq;    // the display: a line, the vertical blank
     wire [31:0] uart_rdata, sd_rdata, vid_rdata, audio_rdata;
     wire [17:0] vid_addr;
 
@@ -135,14 +137,15 @@ module computer #(
         .audio_sel(audio_sel), .audio_addr(audio_addr), .audio_rdata(audio_rdata), .audio_ready(audio_ready),
         .vid_sel(vid_sel), .vid_addr(vid_addr), .vid_rdata(vid_rdata), .vid_ready(vid_ready),
         .leds(leds), .buttons(buttons),
-        .irq_lines({6'b000000, audio_irq, uart_irq}), .irq(irq), .irq_num(irq_num)
+        .irq_lines({4'b0000, uart_irq, audio_irq, frame_irq, line_irq}),
+        .irq(irq), .irq_num(irq_num), .irq_ack(irq_ack), .irq_ack_num(irq_ack_num)
     );
 
     uart #(.DIV_INIT(UART_DIV)) serial (
         .clk(clk), .reset(reset),
         .io_sel(uart_sel), .io_we(io_we), .io_be(io_be), .io_addr(io_addr[3:2]),
         .io_wdata(io_wdata), .io_rdata(uart_rdata), .io_ready(uart_ready),
-        .irq(uart_irq),                                    // line 0: vector 16
+        .irq(uart_irq),                                    // line 3: vector 19
         .uart_rx(uart_rx), .uart_tx(uart_tx)
     );
 
@@ -157,7 +160,7 @@ module computer #(
         .clk(clk), .reset(reset),
         .io_sel(audio_sel), .io_we(io_we), .io_be(io_be), .io_addr(audio_addr[12:2]),
         .io_wdata(io_wdata), .io_rdata(audio_rdata), .io_ready(audio_ready),
-        .irq(audio_irq),                                   // line 1: vector 17
+        .irq(audio_irq),                                   // line 2: vector 18
         .hp_bck(hp_bck), .hp_ws(hp_ws), .hp_din(hp_din), .pa_en(pa_en)
     );
 
@@ -179,6 +182,7 @@ module computer #(
         .cpu_clk(clk), .cpu_sel(vid_sel), .cpu_we(io_we), .cpu_be(io_be),
         .cpu_addr(vid_addr), .cpu_wdata(io_wdata), .cpu_rdata(vid_rdata),
         .cpu_ready(vid_ready),
+        .irq_line(line_irq), .irq_frame(frame_irq),            // lines 0, 1: vectors 16, 17
         .mem_req(vmem_req), .mem_addr(vmem_addr), .mem_count(vmem_count),
         .mem_word(vmem_word), .mem_valid(vmem_valid), .mem_ack(vmem_ack)
     );

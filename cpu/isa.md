@@ -2038,7 +2038,8 @@ The numbers:
 | 2, 3    | free for exceptions |
 | 4       | exception: CONS, the heap is full (L > HLIM) |
 | 5 .. 15 | free for exceptions |
-| 16 .. 47| interrupts from devices: 16 + the line of the interrupt controller (`../computer/iodec.v`: 16 the serial port, 17 the sound) |
+| 16 .. 23| interrupts from devices: 16 + the line of the interrupt controller (`irqc.v`; in the computer: 16 the display's line interrupt, 17 its frame interrupt, 18 the sound, 19 the serial port) |
+| 24 .. 47| free for more lines |
 | 48 .. 255 | free: system calls (INTR n from a program) |
 
 ### The interrupt flag I
@@ -2122,6 +2123,36 @@ A device can only interrupt after the instruction that sets I = 1; an INTR alrea
 its way when CLI takes effect is turned down in execute, so nothing between CLI and
 SEI is interrupted.
 
+### The interrupt controller: priorities and nesting
+
+The devices' lines go to the interrupt controller (`irqc.v`, at 0xFFFF_0400 in the
+computer). A device asks while its irq is 1 (a level), until its handler has served
+it. Line k is vector 16 + k; **the lower the line, the higher its priority**.
+
+- Of the lines that ask (and whose bit in MASK is 1), the controller offers the
+  processor the one of the highest priority (`irq`, `irq_num`).
+- When the processor takes a device's INTR it tells the controller (`irq_ack`,
+  `irq_ack_num`): that line goes **in service** (its bit in ISR).
+- While lines are in service, the controller offers only lines of a **higher priority
+  than all of them**: never the handler's own line, nor any below it.
+- The handler ends with **EOI** (a write to the controller's +12): the line of the
+  highest priority in service is out of service again, which is the handler's own.
+
+So a handler may set I again (SEI) as soon as it has saved what it must: from then on
+only a more urgent device can interrupt it, and that one's handler nests inside it.
+A handler that does not set I runs to its end uninterrupted, as before. Either way it
+does the EOI with I = 0, just before RTI.
+
+| +  | register | |
+|----|----------|-|
+| 0  | PENDING  | read: the lines that ask now |
+| 4  | MASK     | bit k = 1: line k may interrupt; after reset 0 |
+| 8  | NUMBER   | read: the vector offered now (16 + k), 0 if none |
+| 12 | ISR / EOI | read: the lines in service; write (any value): EOI |
+
+A device whose cause is only a moment (the display's line and frame interrupts) keeps
+it in a flag of its own, which the handler clears; so every line is a level.
+
 ### A device's handler
 
 The handler must keep what it changes. The return address is in R (the old R on the
@@ -2133,6 +2164,10 @@ CMP and its CBR:
             PUSH                ; onto the return stack (R too)
             ...                 ; serve the device (it stops asking); registers it uses
                                 ; must be its own, or saved
+            SEI                 ; (if it may take long: more urgent devices may come in)
+            ...
+            CLI
+            STR3    rX, rC, 12  ; EOI (rC: the controller)
             POP
             MOVR    ST, T       ; the flags back (I stays 0)
             DROP

@@ -14,16 +14,13 @@
 //   0xFFFF_0300 - 0xFFFF_03FF   the sound (../audio/audio.v): +0 DATA, +4 STATUS,
 //                               +8 CTRL, +12 DIV, +16 TONE, +20 LEN, +24 BSTATUS,
 //                               +28 BLEN, +32 READY
-//   0xFFFF_0400 - 0xFFFF_04FF   the interrupt controller, here:
-//                               +0 PENDING  read: the devices that ask (bit k = line k)
-//                               +4 MASK     bit k = 1: line k may interrupt (read: as
-//                                           written; after reset 0)
-//                               +8 NUMBER   read: the vector the processor gets now
-//                                           (16 + k), 0 if none
-//                               Lines: 0 the serial port, 1 the sound. A device asks
-//                               while its irq is 1, until its handler has served it
-//                               (each device says how). irq = 1 while a line asks and
-//                               its mask bit is 1; irq_num = 16 + the lowest such line.
+//   0xFFFF_0400 - 0xFFFF_04FF   the interrupt controller (../cpu/irqc.v): +0 PENDING,
+//                               +4 MASK, +8 NUMBER, +12 ISR / EOI. Its lines (line k
+//                               is vector 16 + k; the lower, the more urgent):
+//                                 0  the display's line interrupt
+//                                 1  the display's frame interrupt
+//                                 2  the sound
+//                                 3  the serial port
 //   0xFFFF_C000 - 0xFFFF_CFFF   the sound's sample memory: two banks of 1024 samples,
 //                               two to a word (bank 0 at C000, bank 1 at C800)
 //   0xFFFF_8000 - 0xFFFF_BFFF   the video unit (../display2/video.v), whose own
@@ -79,14 +76,17 @@ module iodec (
     output reg  [5:0]  leds,           // 1 = lit
     input  wire [1:0]  buttons,        // 1 = pressed (already on clk)
     // ---- the interrupt controller
-    input  wire [7:0]  irq_lines,      // the devices' irq (line 0 the serial port, 1 the sound)
+    input  wire [7:0]  irq_lines,      // the devices' irq (see above)
     output wire        irq,            // to the processor
-    output reg  [7:0]  irq_num
+    output wire [7:0]  irq_num,
+    input  wire        irq_ack,        // from the processor: it takes vector irq_ack_num
+    input  wire [7:0]  irq_ack_num
 );
     // ================================================================ which device
     wire is_uart  = (io_addr[15:8] == 8'h00);
     wire is_sd    = (io_addr[15:8] == 8'h01);
-    wire is_board = (io_addr[15:8] == 8'h02) | (io_addr[15:8] == 8'h04);   // the board, the interrupt controller
+    wire is_irqc  = (io_addr[15:8] == 8'h04);
+    wire is_board = (io_addr[15:8] == 8'h02) | is_irqc;   // answered here
     wire is_amem  = (io_addr[15:12] == 4'hC);         // 0xC000 - 0xCFFF
     wire is_audio = (io_addr[15:8] == 8'h03) | is_amem;
     wire is_font  = (io_addr[15:13] == 3'b100);       // 0x8000 - 0x9FFF
@@ -105,25 +105,25 @@ module iodec (
                                 {6'b110001, io_addr[11:0]};
 
     // ================================================================ the interrupt controller
-    reg  [7:0]  irq_mask;
-    wire [7:0]  irq_asks = irq_lines & irq_mask;
-    assign irq = |irq_asks;
-    integer k;
-    always @* begin
-        irq_num = 8'd0;
-        for (k = 7; k >= 0; k = k - 1)
-            if (irq_asks[k]) irq_num = 8'd16 + k;
-    end
+    // A write goes to it once: in the first tick of the access (here_ready follows).
+    wire [31:0] irqc_rdata;
+    wire        here_ready_w;
+    irqc controller (
+        .clk(clk), .reset(reset), .lines(irq_lines),
+        .irq(irq), .irq_num(irq_num), .ack(irq_ack), .ack_num(irq_ack_num),
+        .io_sel(io_sel & is_irqc & !here_ready_w), .io_we(io_we), .io_be(io_be),
+        .io_addr(io_addr[3:2]), .io_wdata(io_wdata), .io_rdata(irqc_rdata)
+    );
 
     // ================================================================ the board
     reg  [31:0] ticks;
     reg         here_ready;            // the board's registers, and nothing: a tick
+    assign here_ready_w = here_ready;
     wire        here_sel = io_sel & (is_board | is_none);
 
     always @(posedge clk) begin
         if (reset) begin
             leds       <= 6'h00;
-            irq_mask   <= 8'h00;
             ticks      <= 32'h0;
             here_ready <= 1'b0;
         end else begin
@@ -131,21 +131,13 @@ module iodec (
             here_ready <= here_sel & !here_ready;
             if (here_sel & !here_ready & io_we & (io_addr[15:8] == 8'h02) & (io_addr[7:2] == 6'd0) & io_be[0])
                 leds <= io_wdata[5:0];
-            if (here_sel & !here_ready & io_we & (io_addr[15:8] == 8'h04) & (io_addr[7:2] == 6'd1) & io_be[0])
-                irq_mask <= io_wdata[7:0];
         end
     end
 
     reg [31:0] here_rdata;
     always @*
         if (!is_board)                 here_rdata = 32'h0;
-        else if (io_addr[10])          // 0xFFFF_04xx: the interrupt controller
-            case (io_addr[7:2])
-                6'd0:    here_rdata = {24'h0, irq_lines};
-                6'd1:    here_rdata = {24'h0, irq_mask};
-                6'd2:    here_rdata = {24'h0, irq_num};
-                default: here_rdata = 32'h0;
-            endcase
+        else if (is_irqc)              here_rdata = (io_addr[7:4] == 4'h0) ? irqc_rdata : 32'h0;
         else case (io_addr[7:2])
             6'd0:    here_rdata = {26'h0, leds};
             6'd1:    here_rdata = {30'h0, buttons};

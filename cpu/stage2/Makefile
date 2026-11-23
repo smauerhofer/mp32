@@ -16,7 +16,7 @@ BUILD ?= build
 BLOCKS = $(wildcard regfile.v sequencer.v decoder.v decode.v)
 
 # The sequencer is tested with the real fetch stage, decode with the whole pipeline.
-OTHERS = ../cpu.v ../stage1/fetch.v ../stage1/pc.v ../stage1/irq_sequence.v \
+OTHERS = ../cpu.v ../irqc.v ../stage1/fetch.v ../stage1/pc.v ../stage1/irq_sequence.v \
          ../stage3/execute.v ../stage3/forward.v ../stage3/alu.v ../stage3/mul.v \
          ../stage3/flags.v ../stage3/cond.v ../stage3/stackregs.v \
          ../stage3/scratch.v ../stage3/tmplh.v \
