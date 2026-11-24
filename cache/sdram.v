@@ -159,7 +159,20 @@ module sdram #(
 
     reg [31:0] dq_out;
     reg        dq_oe;
+    wire [31:0] dq_in;                 // what the SDRAM drives
+`ifdef SYNTHESIS
+    // the chip's I/O buffers (yosys defines SYNTHESIS): a tri-state written as logic
+    // only gets a warning from yosys ("limited support for tri-state logic")
+    genvar d;
+    generate
+        for (d = 0; d < 32; d = d + 1) begin : dq_buf
+            IOBUF b (.O(dq_in[d]), .IO(IO_sdram_dq[d]), .I(dq_out[d]), .OEN(!dq_oe));
+        end
+    endgenerate
+`else
     assign IO_sdram_dq = dq_oe ? dq_out : 32'bz;
+    assign dq_in = IO_sdram_dq;
+`endif
 
     // ================================================================ the machine
     localparam [2:0] S_INIT   = 3'd0,    // NOPs for 200 us
@@ -301,7 +314,7 @@ module sdram #(
                                      col + tb[7:2], 2'b00};
                 end
                 if (op == OP_BURST && tr < {count, 2'b00}) begin
-                    vword  <= IO_sdram_dq;
+                    vword  <= dq_in;
                     vvalid <= 1'b1;
                     if (tr == {count, 2'b00} - 1'b1)
                         vack <= 1'b1;
@@ -319,10 +332,10 @@ module sdram #(
 
                 // read: words 0-3 sampled at the ends of ticks T_RCD+RD_LAT-1 ..
                 if (op == OP_READ && tr < 4) case (tr[1:0])
-                    2'd0: rline[31:0]   <= IO_sdram_dq;
-                    2'd1: rline[63:32]  <= IO_sdram_dq;
-                    2'd2: rline[95:64]  <= IO_sdram_dq;
-                    2'd3: rline[127:96] <= IO_sdram_dq;
+                    2'd0: rline[31:0]   <= dq_in;
+                    2'd1: rline[63:32]  <= dq_in;
+                    2'd2: rline[95:64]  <= dq_in;
+                    2'd3: rline[127:96] <= dq_in;
                 endcase
                 if (op == OP_READ && t == T_RCD + RD_LAT + 2)
                     ack <= 1'b1;                          // rline is complete

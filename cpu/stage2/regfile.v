@@ -90,23 +90,22 @@ module regfile (
         if (w_en && !w_sel[5]) regs[w_sel[4:0]] <= w_data;
 
     // ================================================================ T, S, R, L
-    reg [31:0] special [0:3];          // 0 = T, 1 = S, 2 = R, 3 = L
+    // four registers (an array of registers would be a memory to yosys, which it then
+    // has to take apart again: a warning)
+    wire [31:0] special [0:3];         // 0 = T, 1 = S, 2 = R, 3 = L
 
     // W2 first, then W: W wins when both write the same one
-    integer k;
-    always @(posedge clk) begin
-        if (reset) begin
-            special[0] <= 32'h0;
-            special[1] <= 32'h0;
-            special[2] <= 32'h0;
-            special[3] <= 32'h0;
-        end else
-            for (k = 0; k < 4; k = k + 1)
-                if (w_here && w_sel[5] && w_sel[1:0] == k)
-                    special[k] <= w_data;
-                else if (w2_en && w2_sel == k)
-                    special[k] <= w2_data;
-    end
+    genvar k;
+    generate
+        for (k = 0; k < 4; k = k + 1) begin : sp
+            reg [31:0] v;
+            always @(posedge clk)
+                if (reset)                                          v <= 32'h0;
+                else if (w_here && w_sel[5] && w_sel[1:0] == k)     v <= w_data;
+                else if (w2_en && w2_sel == k)                      v <= w2_data;
+            assign special[k] = v;
+        end
+    endgenerate
 
     // ================================================================ reading
     // what is stored, then the value being written passed through (W before W2)

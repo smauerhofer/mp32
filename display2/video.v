@@ -207,32 +207,41 @@ module video #(
     wire at_palette = is_regs & (cpu_addr[15:10] == 6'b000001);  // 0x30400 - 0x307FF
 
     // ---- writes: straight into the write ports, on cpu_clk, a byte where cpu_be is 1
-    integer i;
-    always @(posedge cpu_clk)
+    // (each block has its own loop variable: one shared by all of them would be a
+    // register driven from four processes)
+    always @(posedge cpu_clk) begin : w_font
+        integer i;
         for (i = 0; i < 4; i = i + 1)
             if (write & is_font & cpu_be[i])
                 font[cpu_addr[FW+1:2]][8*i +: 8] <= cpu_wdata[8*i +: 8];
+    end
 
-    always @(posedge cpu_clk)
+    always @(posedge cpu_clk) begin : w_modes
+        integer i;
         for (i = 0; i < 4; i = i + 1)
             if (write & is_mode & cpu_be[i])
                 modes[cpu_addr[9:2]][8*i +: 8] <= cpu_wdata[8*i +: 8];
+    end
 
-    always @(posedge cpu_clk)
+    always @(posedge cpu_clk) begin : w_palette
+        integer i;
         for (i = 0; i < 4; i = i + 1)
             if (write & at_palette & cpu_be[i])
                 palette[cpu_addr[9:2]][8*i +: 8] <= cpu_wdata[8*i +: 8];
+    end
 
     // ---- the registers
     reg [31:0] text_base   = TEXT_BASE;
     reg [31:0] pixel_base  = PIXEL_BASE;
 
-    always @(posedge cpu_clk)
+    always @(posedge cpu_clk) begin : w_bases
+        integer i;
         for (i = 0; i < 4; i = i + 1)
             if (write & at_bases & cpu_be[i]) begin
                 if (cpu_addr[2]) pixel_base[8*i +: 8] <= cpu_wdata[8*i +: 8];
                 else             text_base[8*i +: 8]  <= cpu_wdata[8*i +: 8];
             end
+    end
 
     // ---- the interrupts' registers
     reg  [9:0]  irq_y     = 10'd0;          // IRQ_LINE

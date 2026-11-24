@@ -702,6 +702,35 @@ about 7,000 LUTs: the core sits at about 55 MHz. 63 MHz would take a deeper
 pipeline (more stages, with longer branch penalties and more forwarding), not more
 small cuts. So the computer runs at 42 MHz, with about 25 % to spare.
 
+**After the opcodes of 2026-11** (WAIT .. the stack limits), `timing/core.v`, yosys
+0.71 and nextpnr-himbaechel 0.11 (the YoWASP builds), three seeds, routed:
+
+| seed | before them | with them, first | CLZ / PCNT as trees, `x2_data` from `ya` | and the new ops' flags from their inputs |
+|------|-------------|------------------|------------------------------------------|------------------------------------------|
+| 1    | 71.6 MHz    | 65.2 MHz         | 74.2 MHz                                 | 78.4 MHz |
+| 2    | 72.8 MHz    | 69.4 MHz         | 72.2 MHz                                 | 79.7 MHz |
+| 3    | 72.3 MHz    | 70.1 MHz         | 72.4 MHz                                 | 79.4 MHz |
+
+The whole computer (`make board`) with the last version routes at 67.8 MHz for
+`cpu_clk` (the pixel clock 81.7 MHz). With the nextpnr of the Windows OSS CAD Suite
+the numbers are lower (the core about 50 MHz, the computer 52.4 MHz with the second
+column's flags path): compare numbers only from one build.
+
+What it took:
+- CLZ and PCNT were first written as loops over the 32 bits, which yosys made chains
+  32 deep; now trees, 5 levels.
+- The second write (`x2_data`) takes only `ya`: its ALU result is always the adder's
+  or a logic op's.
+- Z and N came from the ALU's final result `y`, after the choice between all its ops:
+  the path from a forwarded operand through the ALU into the flags register, the
+  critical one with every seed of the Windows nextpnr (before the new ops too). The
+  ALU now builds `y` in two parts, `y_old` (ops 0 .. 31) and `y_new` (CLZ .. MAXU),
+  and takes the flags of the new ops from their inputs (`f_new`: CLZ's Z is a[31],
+  PCNT's and ABS's Z is a == 0, MIN .. MAXU take Z and N of the operand they pick);
+  Z and N of the old ops come from `y_old`. The flags are the same as before.
+
+The stack check was never on the critical path: its comparisons start from registers.
+
 **Earlier** (before ADD3, LDR3 / STR3, MOV2, ENTER / LEAVE, INCR, ST, the LISP
 opcodes), measured with yosys 0.71 and nextpnr-himbaechel (Gowin, GW2AR-LV18QN88C8/I7),
 `--freq 63`, on the core: fetch, decode, execute, memory access and writeback, with
@@ -784,7 +813,7 @@ critical path is from TMPL / the stack pointers through the ALU's adder to
   the access), divide by zero (5 .. 7 and 12 .. 15 are free). A bus error in stage 4
   would come too late to be precise (the instruction has already changed PSP / RSP in
   stage 3). The stack limits (8 .. 11) are done.
-- `make timing` with the opcodes of 2026-11. New near the critical part of execute:
+- `make timing` with the opcodes of 2026-11: done, see Timing. Near the critical part of execute:
   the stack check (comparators on PSP, RSP, FP and the limits, all from registers, and
   RSP - 4n for ENTER) on `act`, which gates the stores, the register writes and the
   enables of stage 3, and on `redirect`; `wait_hold` on `advance`; the 6-bit ALU op

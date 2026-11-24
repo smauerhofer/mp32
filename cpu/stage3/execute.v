@@ -392,12 +392,17 @@ module execute #(
     assign vec = {vec_r, 10'h000};
 
     // PSPL, PSPH, RSPL, RSPH: the limits of the stacks, bit 0 = the check on
-    reg [31:0] lim_r [0:3];
-    integer    li;
-    always @(posedge clk)
-        for (li = 0; li < 4; li = li + 1)
-            if (reset)                          lim_r[li] <= 32'h0;
-            else if (go & act & e_lim_we[li])   lim_r[li] <= rs;
+    wire [31:0] lim_r [0:3];            // four registers (not an array of them: a memory to yosys)
+    genvar li;
+    generate
+        for (li = 0; li < 4; li = li + 1) begin : lim
+            reg [31:0] v;
+            always @(posedge clk)
+                if (reset)                          v <= 32'h0;
+                else if (go & act & e_lim_we[li])   v <= rs;
+            assign lim_r[li] = v;
+        end
+    endgenerate
     assign pspl = lim_r[0];
     assign psph = lim_r[1];
     assign rspl = lim_r[2];
@@ -497,10 +502,13 @@ module execute #(
             default: rs = ya;
         endcase
 
-    reg [31:0] r2;                      // the second write's value
+    // The second write's value. Its ALU result is always one of the adder or the logic
+    // ops (the binary ops, TADD, TSUB: T = S op T; CONS: L + 8), so it takes ya, not y:
+    // the long ops (shifter, multiplier, CLZ, PCNT, MIN ..) stay off the path to x2_data.
+    reg [31:0] r2;
     always @*
         case (e_x2)
-            2'd0: r2 = e_short ? ya : y;
+            2'd0: r2 = ya;
             2'd1: r2 = y2;
             2'd2: r2 = e_a;
             default: r2 = e_b;

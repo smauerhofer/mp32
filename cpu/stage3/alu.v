@@ -20,6 +20,8 @@
 // step, the multiplier and TTAG, which never take a register of stage 3. So the long
 // path from the registers of stage 3 does not go through them (timing).
 //
+// x2_data (the second write) takes ya only: its ops are all adder or logic ops.
+//
 // ya is y for the adder and the logic ops only (for others: the adder's sum), and
 // flags_a the flags of the adder alone: what the writes of the registers of stage 3,
 // the jumps and the addresses need, without the long ops behind them. flags_s are the
@@ -209,61 +211,112 @@ module alu (
     wire        lt_s  = sum[31] ^ ovf;
     wire        lt_u  = !sum[32];
 
-    // ---- CLZ, PCNT, ABS
-    reg  [5:0]  clz_n;
-    reg  [5:0]  pcnt_n;
-    integer     k;
-    always @* begin
-        clz_n = 6'd32;
-        for (k = 0; k < 32; k = k + 1)
-            if (a[k]) clz_n = 6'd31 - k[5:0];            // the highest 1 wins (last)
-        pcnt_n = 6'd0;
-        for (k = 0; k < 32; k = k + 1)
-            pcnt_n = pcnt_n + {5'd0, a[k]};
-    end
+    // ---- CLZ, PCNT, ABS. CLZ and PCNT as trees, 5 levels deep (a loop over the 32 bits
+    // would make a chain of 32: the long result path of the ALU)
+    //
+    // CLZ: each half says whether it is all 0s and how many 0s lead it; the upper half
+    // wins unless it is all 0s, then it is its width + the lower half's count.
+    wire [15:0] z1;  wire [15:0] c1;                     // 16 x 2 bits: 0 .. 1 (+ all 0)
+    wire [7:0]  z2;  wire [15:0] c2;                     //  8 x 4 bits: 0 .. 3
+    wire [3:0]  z3;  wire [11:0] c3;                     //  4 x 8 bits: 0 .. 7
+    wire [1:0]  z4;  wire [7:0]  c4;                     //  2 x 16 bits: 0 .. 15
+    genvar g;
+    generate
+        for (g = 0; g < 16; g = g + 1) begin : clz1
+            assign z1[g] = !(a[2*g+1] | a[2*g]);
+            assign c1[g] = !a[2*g+1];                     // 1 when the upper bit is 0
+        end
+        for (g = 0; g < 8; g = g + 1) begin : clz2
+            assign z2[g] = z1[2*g+1] & z1[2*g];
+            assign c2[2*g +: 2] = z1[2*g+1] ? {1'b1, c1[2*g]} : {1'b0, c1[2*g+1]};
+        end
+        for (g = 0; g < 4; g = g + 1) begin : clz3
+            assign z3[g] = z2[2*g+1] & z2[2*g];
+            assign c3[3*g +: 3] = z2[2*g+1] ? {1'b1, c2[4*g +: 2]} : {1'b0, c2[4*g+2 +: 2]};
+        end
+        for (g = 0; g < 2; g = g + 1) begin : clz4
+            assign z4[g] = z3[2*g+1] & z3[2*g];
+            assign c4[4*g +: 4] = z3[2*g+1] ? {1'b1, c3[6*g +: 3]} : {1'b0, c3[6*g+3 +: 3]};
+        end
+    endgenerate
+    wire [5:0]  clz_n = (z4[1] & z4[0]) ? 6'd32 :
+                        z4[1] ? {2'b01, c4[3:0]} : {2'b00, c4[7:4]};
+
+    // PCNT: pairs, then sums of 2, 4, 8, 16 bits
+    wire [31:0] p1;  wire [23:0] p2;  wire [15:0] p3;  wire [9:0] p4;
+    generate
+        for (g = 0; g < 16; g = g + 1) begin : pc1
+            assign p1[2*g +: 2] = {1'b0, a[2*g]} + {1'b0, a[2*g+1]};                  // 0 .. 2
+        end
+        for (g = 0; g < 8; g = g + 1) begin : pc2
+            assign p2[3*g +: 3] = {1'b0, p1[4*g +: 2]} + {1'b0, p1[4*g+2 +: 2]};       // 0 .. 4
+        end
+        for (g = 0; g < 4; g = g + 1) begin : pc3
+            assign p3[4*g +: 4] = {1'b0, p2[6*g +: 3]} + {1'b0, p2[6*g+3 +: 3]};       // 0 .. 8
+        end
+        for (g = 0; g < 2; g = g + 1) begin : pc4
+            assign p4[5*g +: 5] = {1'b0, p3[8*g +: 4]} + {1'b0, p3[8*g+4 +: 4]};       // 0 .. 16
+        end
+    endgenerate
+    wire [5:0]  pcnt_n = {1'b0, p4[4:0]} + {1'b0, p4[9:5]};                            // 0 .. 32
     wire [31:0] neg_a = ~a + 32'd1;
 
+    // The result in two parts: y_old for the ops 0 .. 31, y_new for CLZ .. MAXU (op[5]),
+    // put together at the end. The flags of the new ops are worked out from their inputs
+    // (flags_new), not from y: so they stay off the path through all the ops' results
+    // into Z and N, the long path into the flags register.
+    reg [31:0] y_old, y_new;
     reg c, v;
     always @* begin
-        y = 32'h0; y2 = 32'h0; c = cin; v = 1'b0;
+        y_old = 32'h0; y2 = 32'h0; c = cin; v = 1'b0;
         case (op)
-        ADD, ADC, SUB, SBC, RSB, RSC: begin y = sum[31:0]; c = sum[32]; v = ovf; end
-        AND:   begin y = a & b; v = y[30]; end
-        OR:    begin y = a | b; v = y[30]; end
-        XOR:   begin y = a ^ b; v = y[30]; end
-        NOT:   begin y = ~a; v = y[30]; end
+        ADD, ADC, SUB, SBC, RSB, RSC: begin y_old = sum[31:0]; c = sum[32]; v = ovf; end
+        AND:   begin y_old = a & b; v = y_old[30]; end
+        OR:    begin y_old = a | b; v = y_old[30]; end
+        XOR:   begin y_old = a ^ b; v = y_old[30]; end
+        NOT:   begin y_old = ~a; v = y_old[30]; end
         LSL, LSR, ASR, ROR, ROL:
-               begin y = sh_y; if (n != 0) c = sh_c; v = (op == LSL) & lsl_v; end
-        ROLC:  begin y = {a[30:0], cin}; c = a[31]; end
-        RORC:  begin y = {cin, a[31:1]}; c = a[0];  end
-        MULS:  begin y = mul_w[32:1]; y2 = {31'h0, mul_w[0]}; end
-        LSL64: begin {y2, y} = {b[30:0], a, 1'b0};      c = b[31]; end
-        ROL64: begin {y2, y} = {b[30:0], a, cin};       c = b[31]; end
-        LSR64: begin {y2, y} = {1'b0, b, a[31:1]};      c = a[0];  end
-        ASR64: begin {y2, y} = {b[31], b, a[31:1]};     c = a[0];  end
-        ROR64: begin {y2, y} = {cin, b, a[31:1]};       c = a[0];  end
-        CSUB:  begin c = sum[32]; y = c ? sum[31:0] : a; v = c & ovf; end
-        DIVS:  begin y = {div_k[30:0], 1'b0}; y2 = {31'h0, div_q}; c = div_k[31]; end
-        MUL, SMUL: begin y = prod[31:0]; y2 = prod[63:32]; end
-        ASL:   begin y = {a[31], a[29:0], 1'b0}; c = a[30]; v = a[31] ^ a[30]; end
-        TADD, TSUB: begin y = sum[31:0]; c = sum[32]; v = ovf | (|{a[1:0], b[1:0]}); end
-        TTAG:  begin y = {24'h0, (a[7:0] ^ bo[7:0]) & bo[15:8]}; end
-        CLZ:   begin y = {26'h0, clz_n}; end
-        PCNT:  begin y = {26'h0, pcnt_n}; end
-        ABS:   begin y = a[31] ? neg_a : a; v = (a == 32'h8000_0000); end
-        MIN:   begin y = lt_s ? a : b; end
-        MAX:   begin y = lt_s ? b : a; end
-        MINU:  begin y = lt_u ? a : b; end
-        MAXU:  begin y = lt_u ? b : a; end
-        default: begin y = sum[31:0]; c = sum[32]; v = ovf; end
+               begin y_old = sh_y; if (n != 0) c = sh_c; v = (op == LSL) & lsl_v; end
+        ROLC:  begin y_old = {a[30:0], cin}; c = a[31]; end
+        RORC:  begin y_old = {cin, a[31:1]}; c = a[0];  end
+        MULS:  begin y_old = mul_w[32:1]; y2 = {31'h0, mul_w[0]}; end
+        LSL64: begin {y2, y_old} = {b[30:0], a, 1'b0};      c = b[31]; end
+        ROL64: begin {y2, y_old} = {b[30:0], a, cin};       c = b[31]; end
+        LSR64: begin {y2, y_old} = {1'b0, b, a[31:1]};      c = a[0];  end
+        ASR64: begin {y2, y_old} = {b[31], b, a[31:1]};     c = a[0];  end
+        ROR64: begin {y2, y_old} = {cin, b, a[31:1]};       c = a[0];  end
+        CSUB:  begin c = sum[32]; y_old = c ? sum[31:0] : a; v = c & ovf; end
+        DIVS:  begin y_old = {div_k[30:0], 1'b0}; y2 = {31'h0, div_q}; c = div_k[31]; end
+        MUL, SMUL: begin y_old = prod[31:0]; y2 = prod[63:32]; end
+        ASL:   begin y_old = {a[31], a[29:0], 1'b0}; c = a[30]; v = a[31] ^ a[30]; end
+        TADD, TSUB: begin y_old = sum[31:0]; c = sum[32]; v = ovf | (|{a[1:0], b[1:0]}); end
+        TTAG:  begin y_old = {24'h0, (a[7:0] ^ bo[7:0]) & bo[15:8]}; end
+        default: begin y_old = sum[31:0]; c = sum[32]; v = ovf; end
         endcase
     end
 
-    wire wide = ((op >= LSL64) & (op <= ROR64)) | (op == MUL) | (op == SMUL);
-    wire z    = wide ? ({y2, y} == 64'h0) : (y == 32'h0);
-    wire neg  = wide ? y2[31] : y[31];
+    // the new ops and their flags {V, N, Z}: Z and N of the result, from the inputs
+    wire        a_zero = (a == 32'h0), b_zero = (b == 32'h0);
+    reg  [2:0]  f_new;
+    always @*
+        case (op)
+            CLZ:     begin y_new = {26'h0, clz_n};  f_new = {2'b00, a[31]};  end   // 0 only for a 1 on top
+            PCNT:    begin y_new = {26'h0, pcnt_n}; f_new = {2'b00, a_zero}; end
+            ABS:     begin y_new = a[31] ? neg_a : a;                              // N: only 0x8000_0000
+                           f_new = {a == 32'h8000_0000, a == 32'h8000_0000, a_zero}; end
+            MIN:     begin y_new = lt_s ? a : b; f_new = lt_s ? {1'b0, a[31], a_zero} : {1'b0, b[31], b_zero}; end
+            MAX:     begin y_new = lt_s ? b : a; f_new = lt_s ? {1'b0, b[31], b_zero} : {1'b0, a[31], a_zero}; end
+            MINU:    begin y_new = lt_u ? a : b; f_new = lt_u ? {1'b0, a[31], a_zero} : {1'b0, b[31], b_zero}; end
+            default: begin y_new = lt_u ? b : a; f_new = lt_u ? {1'b0, b[31], b_zero} : {1'b0, a[31], a_zero}; end  // MAXU
+        endcase
 
-    assign flags = {v, neg, z, c};
+    always @* y = op[5] ? y_new : y_old;
+
+    wire wide = ((op >= LSL64) & (op <= ROR64)) | (op == MUL) | (op == SMUL);
+    wire z    = wide ? ({y2, y_old} == 64'h0) : (y_old == 32'h0);
+    wire neg  = wide ? y2[31] : y_old[31];
+
+    assign flags = op[5] ? {f_new, cin} : {v, neg, z, c};
 
     // the short result: the adder and the logic ops
     always @*
