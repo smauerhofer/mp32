@@ -112,11 +112,27 @@ All the opcodes of `cpu/isa.md`, with the syntax given there:
     TADD TSUB               ADD / SUB for fixnums: V also if a tag is not 00
     LSLI LSRI ASRI ROLI RORI n      T shifted / rotated by a constant n, 0..31
     TTAG mask, value        Z = ((T & mask) == value), constants 0..$FF
+    WAIT                    wait until a device asks for an interrupt
+    PUSHF       POPF        push R, R = ST (the flags and I) / ST = R, pop R
+    SET cond    SETB cond   T = -1 / 1 if the condition holds, else 0
+    SET2 reg, cond          SETB2 reg, cond     the same into reg (TZ: reg == 0)
+    ADDI2 reg, imm8         CMPI2 reg, imm8     reg + a constant -$80..$7F / its
+                            flags (reg: any register but PC)
+    ABS CLZ PCNT [dst[, src]]   |src|, its leading 0 bits, its 1 bits; one register:
+                            dst = src; none: T
+    LSL2 LSR2 ASR2 ROL2 ROR2 dst, cnt           dst shifted by cnt[4:0]
+    LSL3 LSR3 ASR3 ROL3 ROR3 dst, src, cnt      dst = src shifted by cnt[4:0]
+    MIN2 MAX2 MINU2 MAXU2 dst, src              dst = min / max (signed / unsigned)
+    MIN3 MAX3 MINU3 MAXU3 dst, src1, src2       of dst and src / of src1 and src2
+                            (SET2, ABS .. PCNT, the shifts by a register and MIN ..
+                            MAXU: r0..r31 T S R L only)
 
 Conditions: `EQ NE CS/HS CC/LO MI PL VS VC HI LS GE LT GT LE A TZ`.
-Registers for MOVR, ADDR .. CMPR, ADD2 .. CMP2 and ADD3 .. CMP3: `r0`..`r31`, `T S R L PSP RSP FP PC TMPL TMPH ST HLIM VEC` (ST: the flags, bits 3..0 = V N Z C, bit 4
+Registers for MOVR, ADDR .. CMPR, ADD2 .. CMP2 and ADD3 .. CMP3: `r0`..`r31`, `T S R L PSP RSP FP PC TMPL TMPH ST HLIM VEC PSPL PSPH RSPL RSPH` (ST: the flags, bits 3..0 = V N Z C, bit 4
 the interrupt flag I; HLIM: the heap limit of CONS; VEC: the vector table, 1 KB
-aligned). EXEC was called EXC before; EXC is now the exception.
+aligned; PSPL .. RSPH: the limits of the stacks, bit 0 = the check on). The rule
+"at most one of" counts all registers of stage 3 (PSP RSP FP TMPL TMPH ST HLIM VEC
+PSPL PSPH RSPL RSPH). EXEC was called EXC before; EXC is now the exception.
 
 For a branch or call, a label is turned into the offset from the next
 instruction (for CJMPL and UNEXT: the label's offset in the line); a plain number is put
@@ -268,7 +284,8 @@ The relocation kinds (`Relocations.cs`) are the fields of the instruction set:
 
 New opcodes go into the table in `src/Mp32.Core/Isa.cs`. One that fits an
 existing operand form (no operands, a constant, a condition and an offset, a
-register move) needs nothing else. A new form needs its parsing in
+register move, two or three registers of the register file, a register and an
+8-bit constant, a condition) needs nothing else. A new form needs its parsing in
 `Assembler.Instruction`, its encoding in `Assembler.EmitInstr`, and, if it can
 hold an address, a relocation kind in `Relocations.cs`.
 

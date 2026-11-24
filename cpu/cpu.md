@@ -20,7 +20,8 @@ The block RAM's base and size are parameters of `stage4/membus.v`.
 - 4 special 32-bit registers: T, S, R and L, reached only by special opcodes.
   In an instruction (MOVR), the special registers are numbered: T, S, R, L 00000 ..
   00011 (register file); PSP, RSP, FP 00100 .. 00110, PC 00111, TMPL, TMPH 01000,
-  01001, ST 01010, HLIM 01011 (stage 3 and fetch). All 5 bits count: two selectors name the same register
+  01001, ST 01010, HLIM 01011, VEC 01100, PSPL, PSPH, RSPL, RSPH 01101 .. 10000
+  (stage 3 and fetch). All 5 bits count: two selectors name the same register
   exactly when they are equal. A special selector with bits 4..2 not 000 is not a
   register of the register file (it never writes one, and reads as 0): stage 3
   reads or writes the register itself, and decode sends no value for it
@@ -59,8 +60,16 @@ The block RAM's base and size are parameters of `stage4/membus.v`.
   address is {VEC[31:10], 4n}, no adder. Reset sets it to `VEC_RESET` (= `RESET_PC`,
   0xF000_0000). Read through `d_s3` = 8, written with `d_vec_we`.
 - **I**, the interrupt flag, in stage 3: devices may interrupt while it is 1. Reset
-  and CLI clear it, SEI and RTI set it, a device's INTR taken clears it (`d_ie`,
-  `d_hw`). ST shows it in bit 4. See isa.md, Interrupts and exceptions.
+  and CLI clear it, SEI and RTI set it, POPF sets it to bit 4 of R, a device's INTR
+  taken clears it (`d_ie`, `d_hw`). ST shows it in bit 4; PUSHF saves ST with it.
+  See isa.md, Interrupts and exceptions.
+- **PSPL, PSPH, RSPL, RSPH**, the limits of the stacks (selectors 0x2D .. 0x30), 32
+  bits each, in stage 3 (`stage3/execute.v`): the lowest and highest values PSP and
+  RSP may take; bit 0 of each turns its check on. A push, pop, ENTER or LEAVE that
+  would take its pointer past an enabled limit does nothing and raises exception 8
+  (PSP overflow), 9 (PSP underflow), 10 (RSP overflow) or 11 (RSP underflow). Reset
+  clears them (no checks). Read through `d_s3` = 9 .. 12, written with `d_lim_we`.
+  See isa.md, The stack limits.
 - TMPL and TMPH, 32 bits each (temp lo / temp hi), in stage 3 next to the ALU
   (`stage3/tmplh.v`): the 64-bit value {TMPH, TMPL} for the ALU's 64-bit shifts.
   Read and written by special opcodes.
@@ -244,8 +253,26 @@ control word of execute (see execute.v).
   the return address in `d_imm` (`d_res` = 7): the next instruction for INTR from
   memory, `f_pc` for EXC and for an injected INTR; `d_vec` = 1, `d_hw` = 1 for an
   injected INTR. CLI, SEI (0x34, 0x35): `d_ie`; RTI (0x36): RET with `d_ie` = set.
+- WAIT (0x37): a jump (always) to the next instruction with `d_wait`: execute holds
+  it until a device asks. PUSHF (0x38): as PUSHS, R = ST (`d_s3` = 3, `d_res` = 3).
+  POPF (0x39): as POPS into ST: `d_st_we`, `d_ie` = 11 (I = the result's bit 4).
+- SET, SETB (0x4B), SET2, SETB2 (0x8B): the true value (-1, 1) on operand A, the
+  register on B (for TZ), `d_cond`, `d_res` = 8 (A if the condition holds, else 0).
+- ADDI2, CMPI2 (0x8A): the constant (byte 2) on A, the register on B (or `d_b_s3`),
+  ALU `ADD` / `RSB`, as INCR.
+- ABS, CLZ, PCNT (0x89, byte 1 bits 7..6), LSL2 .. ROR2 (0x98 .. 0x9C), LSL3 .. ROR3
+  (0xD8 .. 0xDC), MIN2 .. MAXU2 (0xA0 .. 0xA3), MIN3 .. MAXU3 (0xE0 .. 0xE3): register
+  file registers only (`df`, `sf`, ...): the first value on A, the second (the shift
+  count) on B, the ALU op (6 bits now: `CLZ` 32 .. `MAXU` 38), the result into the
+  destination.
+- The stack check: `d_chk` bit 0 with every push and pop (the tasks `push_`, `pop_`)
+  and with ENTER (4n on `d_imm`) and LEAVE; not with INTR and EXC, nor the second step
+  of ROT / DROT. CONS has bit 1 at step 0 (the pop of PSP of its step 3), and none at
+  step 3. `d_pc` = `f_pc`: execute sends a failed check back to it.
 - Size: about 1,170 LUTs, 130 flip-flops and 16 RAM16SDP4 (r0 .. r31 with two read
-  ports) (`make size` in `stage2`).
+  ports) (`make size` in `stage2`). The opcodes of 2026-11 (WAIT, PUSHF, POPF, SET,
+  ADDI2, ABS .. PCNT, the register shifts, MIN .. MAXU, the stack check) added about
+  280 LUTs and 50 ALU by yosys 0.33.
 
 Test: `stage2/decode_tb.v`: the whole pipeline (fetch, decode, execute, memory
 access, writeback) on 64 KB of random machine code (every defined opcode, random
@@ -370,12 +397,12 @@ With each instruction decode gives the two operands (`d_a_*`, `d_b_*`) and a
 
 | field | what it says |
 |-------|--------------|
-| `d_alu_op` | the ALU op |
+| `d_alu_op` | the ALU op (6 bits) |
 | `d_cin` | carry in: 0, 1, the C flag, TMPL[0] (MULS) |
 | `d_fmask` | the flags it updates {V, N, Z, C} |
 | `d_a_tmpl` | ALU input a = TMPL (else operand A) |
-| `d_b_s3`, `d_s3` | ALU input b = the stage 3 value (else operand B); s3 (4 bits) = `d_imm`, TMPL, TMPH, ST, PSP, RSP, FP, HLIM or VEC |
-| `d_res` | the result r: ALU y, operand A, operand B, s3, TMP, ALU y with TMPL[31] in bit 0 (DIVS), the ALU's flags (CMP3), or `d_imm` (a return address: INTR, EXC) |
+| `d_b_s3`, `d_s3` | ALU input b = the stage 3 value (else operand B); s3 (4 bits) = `d_imm`, TMPL, TMPH, ST, PSP, RSP, FP, HLIM, VEC, PSPL, PSPH, RSPL or RSPH |
+| `d_res` | the result r (4 bits): ALU y, operand A, operand B, s3, TMP, ALU y with TMPL[31] in bit 0 (DIVS), the ALU's flags (CMP3), `d_imm` (a return address: INTR, EXC), or operand A if the condition `d_cond` holds, else 0 (SET) |
 | `d_wen`, `d_rd` | the main register write: `d_rd` = r (or the loaded word) |
 | `d_x2_wen`, `d_x2_sel`, `d_x2` | the second write: special register `d_x2_sel` = ALU y, y2, operand A or B |
 | `d_load`, `d_store`, `d_size`, `d_signed` | memory, as stage 4 |
@@ -391,14 +418,19 @@ With each instruction decode gives the two operands (`d_a_*`, `d_b_*`) and a
 | `d_vec_we` | VEC = r (bits 9..0 dropped) |
 | `d_vec` | INTR, EXC: a jump to {VEC[31:10], operand A[9:0]} with the push of R and R = `d_imm` |
 | `d_hw` | an INTR injected for a device: taken only if `irq`, I and `irq_num` still say so (then I = 0); else no effect but a jump to `d_imm` |
-| `d_ie` | I = 0 (CLI) or 1 (SEI, RTI) |
+| `d_ie` | I = 0 (CLI), 1 (SEI, RTI) or r[4] (POPF) |
+| `d_lim_we` | PSPL, PSPH, RSPL, RSPH = r (one bit each) |
+| `d_chk` | the stack check: bit 0 of the instruction's own push / pop / ENTER / LEAVE, bit 1 of a pop of PSP (CONS step 0). When it fails, nothing takes effect (`act` = 0) and a redirect goes back to `d_pc` with `redirect_exc_n` = 8 .. 11 |
+| `d_wait` | WAIT: stage 3 holds (as a load-use wait, `forward`'s `hold`) until `irq` (a tick late) is 1 |
+| `d_pc` | the instruction's address (for the stack check) |
 
 The table of control words for every instruction is in `stage3/execute_tb.v` (the
 part that plays decode); the real decode will make the same.
 
 - **VEC_RESET** (a parameter, 0xF000_0000 by default: the boot RAM): VEC after
   reset.
-- `redirect_exc`, `redirect_exc_n`: an exception found in execute (so far CONS's, 4).
+- `redirect_exc`, `redirect_exc_n`: an exception found in execute (CONS's, 4; a stack
+  limit, 8 .. 11, which goes first).
   It goes with the redirect back to the failing instruction, through decode to
   fetch, which injects `EXC n` there (decode adds its own, exception 1).
 - Outputs for cpu.v: `ie` (I) and `ie_off` (a device's INTR or CLI is in execute: I
@@ -550,6 +582,8 @@ that has not written its register back yet then gives execute the value:
 - **Load-use:** a load's value is known only at the end of stage 4. When execute
   needs the register of a load in stage 4, `load_use` is 1: stage 3 holds and sends a
   bubble into stage 4 (`x_valid` = 0). A tick later the value is on `w_*`.
+- **WAIT:** `hold` from execute (a WAIT waiting for a device) holds stage 3 the same
+  way as a load-use wait (`load_use` = 1, bubbles into stage 4).
 - **Holding:** while stage 3 holds (stall from stage 4, or load-use), the operand
   registers take the forwarded values every tick, so a value forwarded once stays
   even after its instruction has gone.
@@ -747,12 +781,21 @@ critical path is from TMPL / the stack pointers through the ALU's adder to
   I/O decoder behind `io_*`.
 - A handler for the sound in the operating system (vector 18; it needs samples to play).
 - More exceptions: a misaligned or unmapped address (execute has the address before
-  the access), divide by zero. A bus error in stage 4 would come too late to be
-  precise (the instruction has already changed PSP / RSP in stage 3).
+  the access), divide by zero (5 .. 7 and 12 .. 15 are free). A bus error in stage 4
+  would come too late to be precise (the instruction has already changed PSP / RSP in
+  stage 3). The stack limits (8 .. 11) are done.
+- `make timing` with the opcodes of 2026-11. New near the critical part of execute:
+  the stack check (comparators on PSP, RSP, FP and the limits, all from registers, and
+  RSP - 4n for ENTER) on `act`, which gates the stores, the register writes and the
+  enables of stage 3, and on `redirect`; `wait_hold` on `advance`; the 6-bit ALU op
+  and the long ops CLZ, PCNT, ABS, MIN .. MAXU behind `y`. Size by yosys 0.33
+  (synth_gowin, no wide LUTs): execute 2,848 -> 3,572 LUTs, 299 -> 553 ALU, 608 -> 782
+  flip-flops (128 of them the limits).
 - `make timing` with the interrupt logic (new near the critical part: `refuse` on the
   `stackregs` enable and on `x_wen`, the gate of `x_wen` on the forwarded operand).
-- The opcodes that read and write TMPL and TMPH, and the 64-bit shift opcodes.
-- A shift right of {C, T} by one, to get the remainder after DIVS.
+- The 64-bit shift opcodes (the ALU has LSL64 .. ROR64; no opcode uses them yet).
+  TMPL and TMPH are read and written with MOVR, MOV2 and the like; the remainder
+  after DIVS is RORC ({C, T} shifted right by one).
   The sequencer is done: ROT and DROT are two steps, all else one.
 - The other jumps (CJMPL, CBR, CBRL, UNEXT, NEXT2, NEXT3, RET, RTI, EXEC, INTR and EXC redirect from execute; the calls
   JSRS, JSR, JSRL from decode).

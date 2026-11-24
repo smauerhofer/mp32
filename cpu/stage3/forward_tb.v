@@ -184,7 +184,7 @@ module forward_tb;
     reg  [1:0]  e_sp;
 
     forward fw (
-        .clk(clk), .reset(reset), .mem_stall(mem_stall), .flush(1'b0),
+        .clk(clk), .reset(reset), .mem_stall(mem_stall), .flush(1'b0), .hold(1'b0),
         .d_valid(d_valid), .d_a_use(d_a_use), .d_a_sel(d_a_sel), .d_a_data(d_a_val),
         .d_b_use(d_b_use), .d_b_sel(d_b_sel), .d_b_data(b_data),
         .e_wen(e_op != ST), .e_rd(e_rd), .e_x2_wen((e_op == LD2) || (e_op == MV2)),

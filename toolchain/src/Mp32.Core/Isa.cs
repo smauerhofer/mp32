@@ -39,6 +39,18 @@ public enum OperandForm
     Local,
     /// <summary>NEXT2 / NEXT3: byte 1 = opx 0 (7..6), the counter register (5..0); signed offset in bytes 2..n.</summary>
     RegRel,
+    /// <summary>SET / SETB: byte 1 = the condition (7..4), 0 (3..1), 1 for SETB (0).</summary>
+    Cond,
+    /// <summary>SET2 / SETB2: byte 1 = opx 0, the register (5..0, r0..r31, T, S, R, L); byte 2 as byte 1 of SET.</summary>
+    RegCond,
+    /// <summary>ADDI2 / CMPI2: byte 1 = opx (7..6: 00 ADDI2, 01 CMPI2), the register; byte 2 = a signed 8-bit constant.</summary>
+    RegImm8,
+    /// <summary>ABS / CLZ / PCNT: byte 1 = the op (7..6), the destination; byte 2 = the source (r0..r31, T, S, R, L).</summary>
+    Unary,
+    /// <summary>LSL2 .. ROR2, MIN2 .. MAXU2: as RegReg, but both must be r0..r31, T, S, R, L.</summary>
+    FileRegReg,
+    /// <summary>LSL3 .. ROR3, MIN3 .. MAXU3: as RegRegReg, but all three must be r0..r31, T, S, R, L.</summary>
+    FileRegRegReg,
 }
 
 /// <summary>One opcode of the mp32 instruction set (cpu/isa.md).</summary>
@@ -122,6 +134,36 @@ public static class Isa
         new("CLI",   0x34, OperandForm.None, "I = 0: no interrupts"),
         new("SEI",   0x35, OperandForm.None, "I = 1: interrupts on"),
         new("RTI",   0x36, OperandForm.None, "return from an interrupt: RET, and I = 1"),
+        new("WAIT",  0x37, OperandForm.None, "wait until a device asks for an interrupt (whatever I is)"),
+        new("PUSHF", 0x38, OperandForm.None, "push R, R = ST (the flags and I)"),
+        new("POPF",  0x39, OperandForm.None, "ST = R (the flags and I), pop the return stack into R"),
+        new("SET",   0x4B, OperandForm.Cond, "T = -1 if the condition holds, else 0"),
+        new("SETB",  0x4B, OperandForm.Cond, "T = 1 if the condition holds, else 0"),
+        new("SET2",  0x8B, OperandForm.RegCond, "reg = -1 if the condition holds, else 0 (TZ: reg == 0)"),
+        new("SETB2", 0x8B, OperandForm.RegCond, "reg = 1 if the condition holds, else 0 (TZ: reg == 0)"),
+        new("ADDI2", 0x8A, OperandForm.RegImm8, "reg = reg + a signed 8-bit constant"),
+        new("CMPI2", 0x8A, OperandForm.RegImm8, "flags of reg - a signed 8-bit constant"),
+        new("ABS",   0x89, OperandForm.Unary, "dst = |src|; V for 0x8000_0000"),
+        new("CLZ",   0x89, OperandForm.Unary, "dst = the leading 0 bits of src (32 for 0)"),
+        new("PCNT",  0x89, OperandForm.Unary, "dst = the 1 bits of src"),
+        new("LSL2",  0x98, OperandForm.FileRegReg, "dst = dst << src[4:0]"),
+        new("LSR2",  0x99, OperandForm.FileRegReg, "dst = dst >> src[4:0], 0s in"),
+        new("ASR2",  0x9A, OperandForm.FileRegReg, "dst = dst >> src[4:0], the sign kept"),
+        new("ROL2",  0x9B, OperandForm.FileRegReg, "dst rotated left by src[4:0]"),
+        new("ROR2",  0x9C, OperandForm.FileRegReg, "dst rotated right by src[4:0]"),
+        new("MIN2",  0xA0, OperandForm.FileRegReg, "dst = the smaller of dst, src (signed)"),
+        new("MAX2",  0xA1, OperandForm.FileRegReg, "dst = the larger of dst, src (signed)"),
+        new("MINU2", 0xA2, OperandForm.FileRegReg, "dst = the smaller of dst, src (unsigned)"),
+        new("MAXU2", 0xA3, OperandForm.FileRegReg, "dst = the larger of dst, src (unsigned)"),
+        new("LSL3",  0xD8, OperandForm.FileRegRegReg, "dst = src1 << src2[4:0]"),
+        new("LSR3",  0xD9, OperandForm.FileRegRegReg, "dst = src1 >> src2[4:0], 0s in"),
+        new("ASR3",  0xDA, OperandForm.FileRegRegReg, "dst = src1 >> src2[4:0], the sign kept"),
+        new("ROL3",  0xDB, OperandForm.FileRegRegReg, "dst = src1 rotated left by src2[4:0]"),
+        new("ROR3",  0xDC, OperandForm.FileRegRegReg, "dst = src1 rotated right by src2[4:0]"),
+        new("MIN3",  0xE0, OperandForm.FileRegRegReg, "dst = the smaller of src1, src2 (signed)"),
+        new("MAX3",  0xE1, OperandForm.FileRegRegReg, "dst = the larger of src1, src2 (signed)"),
+        new("MINU3", 0xE2, OperandForm.FileRegRegReg, "dst = the smaller of src1, src2 (unsigned)"),
+        new("MAXU3", 0xE3, OperandForm.FileRegRegReg, "dst = the larger of src1, src2 (unsigned)"),
         new("LIT8",  0x40, OperandForm.Imm, "T = 8-bit signed constant"),
         new("UNEXT", 0x48, OperandForm.Local, "if R != 0: R = R - 1, jump within the line; else drop R (pop the return stack into R)"),
         new("CJMPL", 0x41, OperandForm.CondLocal, "conditional jump within the line"),
@@ -198,7 +240,8 @@ public static class Isa
         Instructions.ToDictionary(i => i.Mnemonic, StringComparer.OrdinalIgnoreCase);
 
     // MOV2 and MOVI2 share 0x83, INCR .. DECWR 0x44, LSLI .. RORI 0x47, the LDRs 0x84 / 0xC4,
-    // the STRs 0x85 / 0xC5 (bytes 1, 2 tell them apart): the first one is kept.
+    // the STRs 0x85 / 0xC5, SET / SETB 0x4B, SET2 / SETB2 0x8B, ADDI2 / CMPI2 0x8A, ABS / CLZ /
+    // PCNT 0x89 (bytes 1, 2 tell them apart): the first one is kept.
     private static readonly Dictionary<byte, Instruction> ByOpcode =
         Instructions.GroupBy(i => i.Opcode).ToDictionary(g => g.Key, g => g.First());
 
@@ -223,6 +266,7 @@ public static class Isa
             ["T"] = 0x00, ["S"] = 0x01, ["R"] = 0x02, ["L"] = 0x03,
             ["PSP"] = 0x04, ["RSP"] = 0x05, ["FP"] = 0x06, ["PC"] = 0x07,
             ["TMPL"] = 0x08, ["TMPH"] = 0x09, ["ST"] = 0x0A, ["HLIM"] = 0x0B, ["VEC"] = 0x0C,
+            ["PSPL"] = 0x0D, ["PSPH"] = 0x0E, ["RSPL"] = 0x0F, ["RSPH"] = 0x10,
         };
 
     /// <summary>The 6-bit selector of T as MOVR / ADDR .. CMPR name it.</summary>
@@ -247,11 +291,11 @@ public static class Isa
     }
 
     /// <summary>
-    /// True for the registers of stage 3 (PSP, RSP, FP, TMPL, TMPH, ST, HLIM, VEC, VEC): they reach the
-    /// ALU only on one input, so ADD2 .. CMP2 can name at most one of them.
+    /// True for the registers of stage 3 (PSP, RSP, FP, TMPL, TMPH, ST, HLIM, VEC, PSPL, PSPH, RSPL,
+    /// RSPH): they reach the ALU only on one input, so ADD2 .. CMP2 can name at most one of them.
     /// </summary>
     public static bool IsStage3(int selector) =>
-        (selector & 0x20) != 0 && (selector & 0x1F) is 0x04 or 0x05 or 0x06 or 0x08 or 0x09 or 0x0A or 0x0B or 0x0C;
+        (selector & 0x20) != 0 && (selector & 0x1F) is 0x04 or 0x05 or 0x06 or (>= 0x08 and <= 0x10);
 
     public static string RegisterName(int selector)
     {
@@ -267,6 +311,23 @@ public static class Isa
         "INCR" => 0x00, "DECR" => 0x80, "INCWR" => 0x40, "DECWR" => 0xC0,
         _ => throw new ArgumentException(mnemonic),
     };
+
+    /// <summary>Byte 1 bits 7..6 of ABS, CLZ, PCNT (0x89).</summary>
+    public static int UnaryBits(string mnemonic) => mnemonic.ToUpperInvariant() switch
+    {
+        "ABS" => 0x00, "CLZ" => 0x40, "PCNT" => 0x80,
+        _ => throw new ArgumentException(mnemonic),
+    };
+
+    /// <summary>Byte 1 bits 7..6 of ADDI2, CMPI2 (0x8A).</summary>
+    public static int Imm8Bits(string mnemonic) => mnemonic.ToUpperInvariant() switch
+    {
+        "ADDI2" => 0x00, "CMPI2" => 0x40,
+        _ => throw new ArgumentException(mnemonic),
+    };
+
+    /// <summary>SETB, SETB2: true is 1 (bit 0 of the condition byte); SET, SET2: true is -1.</summary>
+    public static int SetOneBit(string mnemonic) => mnemonic.ToUpperInvariant().StartsWith("SETB") ? 1 : 0;
 
     /// <summary>Byte 1 bits 7..5 of LSLI .. RORI (SHI, 0x47): the shift op.</summary>
     public static int ShiftBits(string mnemonic) => mnemonic.ToUpperInvariant() switch

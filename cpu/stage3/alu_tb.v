@@ -15,22 +15,26 @@
 // 64 / 32 division, is tested in tmplh_tb.v with the real TMPL).
 // TADD and TSUB are checked as ADD and SUB with V also set by a tag that is not 00;
 // TTAG against (a & mask) == (value & mask) on every low byte with many masks.
+// CLZ and PCNT against a bit-by-bit count, ABS against a signed negate (V only for
+// 0x80000000), MIN, MAX, MINU, MAXU against signed and unsigned integer compares.
 // Then the flags register: random masks, en and reset against a model.
 
 `timescale 1ns/1ps
 
 module alu_tb;
-    localparam [4:0] ADD = 5'd0,  ADC = 5'd1,  SUB = 5'd2,  SBC = 5'd3,
-                     AND = 5'd4,  OR  = 5'd5,  XOR = 5'd6,  NOT = 5'd7,
-                     LSL = 5'd8,  LSR = 5'd9,  ASR = 5'd10, ROR = 5'd11,
-                     LSL64 = 5'd12, LSR64 = 5'd13, ASR64 = 5'd14,
-                     ROL64 = 5'd15, ROR64 = 5'd16, CSUB = 5'd17, DIVS = 5'd18,
-                     MUL = 5'd19, SMUL = 5'd20, ASL = 5'd21,
-                     ROL = 5'd22, ROLC = 5'd23, RORC = 5'd24, MULS = 5'd25,
-                     RSB = 5'd26, RSC = 5'd27, TADD = 5'd28, TSUB = 5'd29, TTAG = 5'd30;
-    localparam       NOPS = 31;           // ops 0 .. 30
+    localparam [5:0] ADD = 6'd0,  ADC = 6'd1,  SUB = 6'd2,  SBC = 6'd3,
+                     AND = 6'd4,  OR  = 6'd5,  XOR = 6'd6,  NOT = 6'd7,
+                     LSL = 6'd8,  LSR = 6'd9,  ASR = 6'd10, ROR = 6'd11,
+                     LSL64 = 6'd12, LSR64 = 6'd13, ASR64 = 6'd14,
+                     ROL64 = 6'd15, ROR64 = 6'd16, CSUB = 6'd17, DIVS = 6'd18,
+                     MUL = 6'd19, SMUL = 6'd20, ASL = 6'd21,
+                     ROL = 6'd22, ROLC = 6'd23, RORC = 6'd24, MULS = 6'd25,
+                     RSB = 6'd26, RSC = 6'd27, TADD = 6'd28, TSUB = 6'd29, TTAG = 6'd30,
+                     CLZ = 6'd32, PCNT = 6'd33, ABS = 6'd34,
+                     MIN = 6'd35, MAX = 6'd36, MINU = 6'd37, MAXU = 6'd38;
+    localparam       NOPS = 39;           // ops 0 .. 38 (31: as ADD)
 
-    reg  [4:0]  op = 0;
+    reg  [5:0]  op = 0;
     reg  [31:0] a = 0, b = 0;
     reg         cin = 0;
     wire [31:0] y, y2;
@@ -72,6 +76,24 @@ module alu_tb;
                 if ((op == TADD || op == TSUB) && (a % 4 != 0 || b % 4 != 0)) rv = 1;
             end
             TTAG: ry = {24'h0, (a[7:0] ^ b[7:0]) & b[15:8]};
+            CLZ: begin                          // from the top down, until a 1
+                ry = 0;
+                for (s = 31; s >= 0 && a[s] == 1'b0; s = s - 1) ry = ry + 1;
+            end
+            PCNT: begin
+                ry = 0;
+                for (s = 0; s < 32; s = s + 1) ry = ry + a[s];
+            end
+            ABS: begin
+                sa = $signed(a);
+                sr = (sa < 0) ? -sa : sa;
+                ry = sr[31:0];
+                rv = (sr > 64'sh7FFFFFFF);      // only |-2^31| does not fit
+            end
+            MIN:  ry = ($signed(a) <= $signed(b)) ? a : b;
+            MAX:  ry = ($signed(a) >= $signed(b)) ? a : b;
+            MINU: ry = (a <= b) ? a : b;
+            MAXU: ry = (a >= b) ? a : b;
             RSB, RSC: begin                     // b - a, as integers
                 w = (op == RSB) ? {32'h0, b} - {32'h0, a} : {32'h0, b} - {32'h0, a} - (1 - cin);
                 ry = w[31:0]; rc = !w[63];      // no borrow: the difference is not negative
@@ -212,6 +234,13 @@ module alu_tb;
         for (i = 0; i < 64; i = i + 1)
             for (k = 0; k < 2; k = k + 1) begin
                 op = ROL; a = 32'hC3A5_0F81; b = i; cin = k; check;
+            end
+        // ---- CLZ, PCNT: every position of the highest 1, with random bits below it
+        for (i = 0; i < 33; i = i + 1)
+            for (j = 0; j < 50; j = j + 1) begin
+                a = (i == 32) ? 32'h0 : ((32'h1 << i) | ($random(seed) & ((32'h1 << i) - 1)));
+                b = $random(seed); cin = $random(seed);
+                op = CLZ; check; op = PCNT; check; op = ABS; check;
             end
         // ---- TTAG: Z is the tag test, (a & mask) == (value & mask); every low byte
         for (i = 0; i < 256; i = i + 1)

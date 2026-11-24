@@ -101,7 +101,7 @@ module decode (
     output wire [31:0] d_b_data,
 
     // ---- to execute: the control word
-    output wire [4:0]  d_alu_op,
+    output wire [5:0]  d_alu_op,
     output wire [1:0]  d_cin,
     output wire [3:0]  d_fmask,
     output wire        d_a_tmpl,
@@ -109,7 +109,7 @@ module decode (
     output wire        d_b_imm,
     output wire [31:0] d_imm,
     output wire [3:0]  d_s3,
-    output wire [2:0]  d_res,
+    output wire [3:0]  d_res,
     output wire        d_wen,
     output wire [5:0]  d_rd,
     output wire        d_x2_wen,
@@ -141,6 +141,10 @@ module decode (
     output wire        d_hw,           // an INTR from fetch (checked again in execute)
     output wire [1:0]  d_ie,           // the I flag: 01 = 0 (CLI), 10 = 1 (SEI, RTI)
     output wire        d_vec_we,       // VEC = r
+    output wire [3:0]  d_lim_we,       // PSPL, PSPH, RSPL, RSPH = r
+    output wire [1:0]  d_chk,          // check the stack op against the limits (bit 1: a pop of PSP, CONS)
+    output wire        d_wait,         // WAIT
+    output wire [31:0] d_pc,           // the instruction's address (a stack exception goes back to it)
 
     // ---- the special registers, to look at
     output wire [31:0] t,
@@ -179,8 +183,11 @@ module decode (
         .d_tmp_we(d_tmp_we), .d_tmp_src(d_tmp_src), .d_tl_we(d_tl_we), .d_th_we(d_th_we),
         .d_th_y2(d_th_y2), .d_tl_shl(d_tl_shl), .d_tl_shr(d_tl_shr), .d_st_we(d_st_we),
         .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(d_trap), .d_hl_we(d_hl_we), .d_loop(d_loop),
-        .d_vec(d_vec), .d_hw(d_hw), .d_ie(d_ie), .d_vec_we(d_vec_we), .d_undef(undef)
+        .d_vec(d_vec), .d_hw(d_hw), .d_ie(d_ie), .d_vec_we(d_vec_we), .d_lim_we(d_lim_we),
+        .d_chk(d_chk), .d_wait(d_wait), .d_undef(undef)
     );
+
+    assign d_pc = f_pc;
 
     // ================================================================ the pre-decode
     // After the next edge f_* holds either a new instruction from fetch (f_load), at

@@ -25,7 +25,7 @@ module decoder (
     output reg  [5:0]  d_a_sel,
     output reg         d_b_use,
     output reg  [5:0]  d_b_sel,
-    output reg  [4:0]  d_alu_op,
+    output reg  [5:0]  d_alu_op,
     output reg  [1:0]  d_cin,
     output reg  [3:0]  d_fmask,
     output reg         d_a_tmpl,
@@ -33,7 +33,7 @@ module decoder (
     output reg         d_b_imm,
     output reg  [31:0] d_imm,
     output reg  [3:0]  d_s3,
-    output reg  [2:0]  d_res,
+    output reg  [3:0]  d_res,
     output reg         d_wen,
     output reg  [5:0]  d_rd,
     output reg         d_x2_wen,
@@ -65,21 +65,26 @@ module decoder (
     output reg         d_hw,          // an INTR injected by fetch (a device's interrupt)
     output reg  [1:0]  d_ie,          // the I flag: 01 = 0 (CLI), 10 = 1 (SEI, RTI)
     output reg         d_vec_we,      // VEC = r
+    output reg  [3:0]  d_lim_we,      // PSPL, PSPH, RSPL, RSPH = r (bit 0 .. 3)
+    output reg  [1:0]  d_chk,         // the stack check: bit 0 the stack op's, bit 1 a pop of PSP (CONS)
+    output reg         d_wait,        // WAIT: execute holds it until a device asks
     output wire        d_undef        // the opcode (byte 0) is not defined: exception 1
 );
     // ================================================================ names
-    localparam [4:0] A_ADD = 0, A_ADC = 1, A_SUB = 2, A_SBC = 3, A_AND = 4, A_OR = 5,
+    localparam [5:0] A_ADD = 0, A_ADC = 1, A_SUB = 2, A_SBC = 3, A_AND = 4, A_OR = 5,
                      A_XOR = 6, A_NOT = 7, A_LSL = 8, A_LSR = 9, A_ASR = 10, A_ROR = 11,
                      A_CSUB = 17, A_DIVS = 18, A_MUL = 19, A_SMUL = 20, A_ASL = 21,
                      A_ROL = 22, A_ROLC = 23, A_RORC = 24, A_MULS = 25,
-                     A_RSB = 26, A_RSC = 27, A_TADD = 28, A_TSUB = 29, A_TTAG = 30;
+                     A_RSB = 26, A_RSC = 27, A_TADD = 28, A_TSUB = 29, A_TTAG = 30,
+                     A_CLZ = 32, A_PCNT = 33, A_ABS = 34,
+                     A_MIN = 35, A_MAX = 36, A_MINU = 37, A_MAXU = 38;
     localparam [2:0] SP_BASE = 0, SP_PUSH = 1, SP_POP = 2, SP_SET = 3, SP_ENTER = 5, SP_LEAVE = 6;
     localparam [1:0] PSP = 0, RSP = 1, FP = 2;
     localparam [5:0] T_ = 6'b100000, S_ = 6'b100001, R_ = 6'b100010, L_ = 6'b100011;
     localparam [1:0] X2_T = 0, X2_S = 1, X2_L = 3;
     // d_res
-    localparam [2:0] RES_Y = 0, RES_A = 1, RES_B = 2, RES_S3 = 3, RES_TMP = 4, RES_DIVS = 5,
-                     RES_FLAGS = 6, RES_IMM = 7;
+    localparam [3:0] RES_Y = 0, RES_A = 1, RES_B = 2, RES_S3 = 3, RES_TMP = 4, RES_DIVS = 5,
+                     RES_FLAGS = 6, RES_IMM = 7, RES_SET = 8;
     // d_x2
     localparam [1:0] X2_Y = 0, X2_Y2 = 1, X2_A = 2, X2_B = 3;
     // d_cin
@@ -97,7 +102,7 @@ module decoder (
     wire [5:0] reg6 = b1[5:0];
     wire       in_file = !reg6[5] | (reg6[4:2] == 3'b000);   // r0 .. r31, T, S, R, L
     // the registers of stage 3 and PC: 0 PSP, 1 RSP, 2 FP, 3 PC, 4 TMPL, 5 TMPH, 6 ST,
-    // 7 HLIM, 8 VEC, 15 none
+    // 7 HLIM, 8 VEC, 9 PSPL, 10 PSPH, 11 RSPL, 12 RSPH (the stack limits), 15 none
     localparam [3:0] NONE = 4'd15;
     function [3:0] s3w_of(input [5:0] g);
         case (g)
@@ -106,6 +111,10 @@ module decoder (
             6'b101010: s3w_of = 6;                                // ST
             6'b101011: s3w_of = 7;                                // HLIM
             6'b101100: s3w_of = 8;                                // VEC
+            6'b101101: s3w_of = 9;                                // PSPL
+            6'b101110: s3w_of = 10;                               // PSPH
+            6'b101111: s3w_of = 11;                               // RSPL
+            6'b110000: s3w_of = 12;                               // RSPH
             default:   s3w_of = NONE;
         endcase
     endfunction
@@ -136,7 +145,38 @@ module decoder (
     wire       add3_ok = (b1[7:6] == 2'b00) & (d3f | d3w != NONE) & (s13f | s13w != NONE) & (s23f | s23w != NONE)
                        & !(s13s3 & s23s3)
                        & !((op[2:0] == 3'd7) & d3pc);              // CMP3 PC, ..: no
-    wire [2:0] res3 = (op[2:0] == 3'd7) ? RES_FLAGS : RES_Y;        // CMP3: the flags
+    wire [3:0] res3 = (op[2:0] == 3'd7) ? RES_FLAGS : RES_Y;        // CMP3: the flags
+
+    // The register shifts, MIN .. MAXU and ABS, CLZ, PCNT: every register in the register
+    // file (r0 .. r31, T, S, R, L): their results come from the long part of the ALU,
+    // which does not reach the registers of stage 3, and operand B goes to the shifter.
+    // LSL2 .. ROR2 (0x98 .. 0x9C), MIN2 .. MAXU2 (0xA0 .. 0xA3): byte 1 = opx 0 and the
+    // destination, also the first operand; byte 2 = the second (the shift count).
+    wire       f2_ok = (b1[7:6] == 2'b00) & df & sf;
+    // LSL3 .. ROR3 (0xD8 .. 0xDC), MIN3 .. MAXU3 (0xE0 .. 0xE3): byte 1 = opx 0 and the
+    // destination; byte 2 = the first operand, byte 3 = the second.
+    wire       f3_ok = (b1[7:6] == 2'b00) & d3f & s13f & s23f;
+    // ABS, CLZ, PCNT (0x89): byte 1 = the op (7..6: 00 ABS, 01 CLZ, 10 PCNT) and the
+    // destination; byte 2 = the source.
+    wire       un_ok = (b1[7:6] != 2'b11) & df & sf;
+    reg  [5:0] sh_op;                              // the shift of 0x98 .. 0x9C, 0xD8 .. 0xDC
+    always @*
+        case (op[2:0])
+            3'd0: sh_op = A_LSL;  3'd1: sh_op = A_LSR;  3'd2: sh_op = A_ASR;
+            3'd3: sh_op = A_ROL;  default: sh_op = A_ROR;
+        endcase
+    wire [5:0] mm_op = (op[1:0] == 2'd0) ? A_MIN : (op[1:0] == 2'd1) ? A_MAX :
+                       (op[1:0] == 2'd2) ? A_MINU : A_MAXU;
+
+    // ADDI2 / CMPI2 (0x8A): byte 1 = opx (7..6: 00 ADDI2, 01 CMPI2) and the register: one
+    // of the register file or of stage 3 (not PC); byte 2 = a signed 8-bit constant.
+    wire       addi_ok = !b1[7] & (in_file | (s3w != NONE & s3w != 3));
+    wire [31:0] imm8b2 = {{24{b2[7]}}, b2};
+
+    // SET / SETB (0x4B): byte 1 = the condition (7..4), 0 (3..1), 1: true is 1 (0).
+    // SET2 / SETB2 (0x8B): byte 1 = opx 0 and the register (file); byte 2 as byte 1 of SET.
+    wire       set_ok  = (b1[3:1] == 3'b000);
+    wire       set2_ok = (b1[7:6] == 2'b00) & df & (b2[3:1] == 3'b000);
 
     // MOV2 / MOVI2 (0x83): byte 1 = mode (7: 0 MOV2, 1 MOVI2), 0 (6), the destination
     // (5..0); byte 2 = the source register (5..0; bits 7..6 ignored), or for MOVI2 a
@@ -233,26 +273,32 @@ module decoder (
     // that does not exist, does nothing, as before.)
     function defined_op(input [7:0] o);
         case (o)
-            8'h40, 8'h41, 8'h42, 8'h43, 8'h44, 8'h46, 8'h47, 8'h48, 8'h49, 8'h4A,
+            8'h40, 8'h41, 8'h42, 8'h43, 8'h44, 8'h46, 8'h47, 8'h48, 8'h49, 8'h4A, 8'h4B,
             8'hC0, 8'hC1, 8'hC2, 8'hC4, 8'hC5, 8'hC6, 8'hC8:  defined_op = 1'b1;
-            default: defined_op = (o <= 8'h36)                      // NOP .. RTI
+            default: defined_op = (o <= 8'h39)                      // NOP .. POPF
                                | (o >= 8'h50 && o <= 8'h57)        // ADDR .. CMPR
-                               | (o >= 8'h80 && o <= 8'h88)        // LIT16 .. NEXT2
+                               | (o >= 8'h80 && o <= 8'h8B)        // LIT16 .. SET2
                                | (o >= 8'h90 && o <= 8'h97)        // ADD2 .. CMP2
-                               | (o >= 8'hD0 && o <= 8'hD7);       // ADD3 .. CMP3
+                               | (o >= 8'h98 && o <= 8'h9C)        // LSL2 .. ROR2
+                               | (o >= 8'hA0 && o <= 8'hA3)        // MIN2 .. MAXU2
+                               | (o >= 8'hD0 && o <= 8'hD7)        // ADD3 .. CMP3
+                               | (o >= 8'hD8 && o <= 8'hDC)        // LSL3 .. ROR3
+                               | (o >= 8'hE0 && o <= 8'hE3);       // MIN3 .. MAXU3
         endcase
     endfunction
     assign d_undef = !defined_op(op);
 
     // ================================================================ the control word
 
+    // a push or pop is checked against the stack's limits (d_chk[0]), unless the
+    // instruction says otherwise (INTR, EXC; the second step of ROT, DROT)
     task pop_(input [1:0] st);
-        begin d_sp_sel = st; d_sp_op = SP_POP;  d_load = 1; end
+        begin d_sp_sel = st; d_sp_op = SP_POP;  d_load = 1; d_chk[0] = 1; end
     endtask
     task push_(input [1:0] st, input src);         // src: 0 operand A, 1 operand B
-        begin d_sp_sel = st; d_sp_op = SP_PUSH; d_store = 1; d_wdata = src; end
+        begin d_sp_sel = st; d_sp_op = SP_PUSH; d_store = 1; d_wdata = src; d_chk[0] = 1; end
     endtask
-    task rd_(input [5:0] sel, input [2:0] res);
+    task rd_(input [5:0] sel, input [3:0] res);
         begin d_wen = 1; d_rd = sel; d_res = res; end
     endtask
     task x2_(input [1:0] sel, input [1:0] src);
@@ -275,13 +321,14 @@ module decoder (
             rd_(T_, RES_Y);
         end
     endtask
-    // read / write a register of stage 3 (s3w 0 PSP 1 RSP 2 FP 4 TMPL 5 TMPH 6 ST 7 HLIM 8 VEC)
+    // read / write a register of stage 3 (s3w 0 PSP 1 RSP 2 FP 4 TMPL 5 TMPH 6 ST 7 HLIM 8 VEC
+    // 9 PSPL 10 PSPH 11 RSPL 12 RSPH)
     task s3_read(input [3:0] w);
         begin
             // PSP, RSP, FP from their own outputs (d_s3 4 .. 6), not through
             // `stackregs`' sel: sel stays free for a write of another one
             if (w < 3) d_s3 = 4'd4 + {2'b00, w[1:0]};
-            else       d_s3 = (w == 4) ? 4'd1 : (w == 5) ? 4'd2 : (w == 6) ? 4'd3 : (w == 7) ? 4'd7 : 4'd8;
+            else       d_s3 = (w == 4) ? 4'd1 : (w == 5) ? 4'd2 : (w == 6) ? 4'd3 : w;   // 7 HLIM .. 12 RSPH
         end
     endtask
     task s3_write(input [3:0] w);                  // the value: the result r
@@ -291,7 +338,8 @@ module decoder (
             else if (w == 5) d_th_we = 1;
             else if (w == 6) d_st_we = 1;
             else if (w == 7) d_hl_we = 1;
-            else             d_vec_we = 1;
+            else if (w == 8) d_vec_we = 1;
+            else             d_lim_we = 4'b0001 << (w - 4'd9);
         end
     endtask
 
@@ -305,7 +353,8 @@ module decoder (
         d_sp_sel = PSP; d_sp_op = SP_BASE; d_tmp_we = 0; d_tmp_src = 0;
         d_tl_we = 0; d_th_we = 0; d_th_y2 = 0; d_tl_shl = 0; d_tl_shr = 0; d_st_we = 0;
         d_jump = 0; d_cond = 0; d_tgt = 0; call = 0; d_trap = 0; d_hl_we = 0; d_loop = 0;
-        d_vec = 0; d_hw = 0; d_ie = 2'b00; d_vec_we = 0;
+        d_vec = 0; d_hw = 0; d_ie = 2'b00; d_vec_we = 0; d_lim_we = 4'b0000; d_chk = 2'b00;
+        d_wait = 0;
 
         case (op)
         // ---------------------------------------------------- stack
@@ -324,13 +373,13 @@ module decoder (
         8'h0D: begin ra(R_); pop_(RSP); rd_(R_, RES_Y); x2_(X2_S, X2_A); end       // POPS
         8'h0E: if (!d_step) begin                                                  // ROT
                    rb(T_); d_tmp_we = 1; d_tmp_src = 1; pop_(PSP); rd_(T_, RES_Y);
-               end else begin
-                   ra(S_); push_(PSP, 0); rd_(S_, RES_TMP);
+               end else begin                                                      // (the pop of step 0
+                   ra(S_); push_(PSP, 0); rd_(S_, RES_TMP); d_chk = 2'b00;         //  was checked)
                end
         8'h0F: if (!d_step) begin                                                  // DROT
                    ra(S_); d_tmp_we = 1; d_tmp_src = 0; pop_(PSP); rd_(S_, RES_Y);
                end else begin
-                   rb(T_); push_(PSP, 1); rd_(T_, RES_TMP);
+                   rb(T_); push_(PSP, 1); rd_(T_, RES_TMP); d_chk = 2'b00;
                end
         // ---------------------------------------------------- arithmetic and logic
         8'h10: binop(A_ADD, CIN_0);                                                // ADD
@@ -379,6 +428,8 @@ module decoder (
                    // if it traps (C = 0): exception 4. Execute sends fetch back to this
                    // CONS (d_imm), which injects EXC 4 there. Nothing else happens.
                    d_trap = 1; d_imm = f_pc;
+                   // and step 3's pop of PSP is checked here, before anything is done
+                   d_chk = 2'b10;
                end
                2'd1: begin                                                         // the word at L - 1 = S (the car)
                    ra(L_); d_b_imm = 1; d_imm = 32'hFFFF_FFFF;
@@ -392,7 +443,7 @@ module decoder (
                end
                default: begin                                                      // S = pop, L = L + 8
                    ra(L_); d_b_imm = 1; d_imm = 32'd8; d_alu_op = A_ADD; d_cin = CIN_0;
-                   pop_(PSP); rd_(S_, RES_Y); x2_(X2_L, X2_Y);
+                   pop_(PSP); rd_(S_, RES_Y); x2_(X2_L, X2_Y); d_chk = 2'b00;    // (checked in step 0)
                end
                endcase
         8'h32: binop(A_TADD, CIN_0);                                               // TADD
@@ -410,7 +461,7 @@ module decoder (
         8'h49, 8'h4A: begin
                    a_const = {22'h0, b1, 2'b00}; d_vec = 1;
                    d_hw = f_inject & !op[1];
-                   rb(R_); push_(RSP, 1);
+                   rb(R_); push_(RSP, 1); d_chk = 2'b00;                            // never checked
                    d_imm = (op[1] | f_inject) ? f_pc : next; rd_(R_, RES_IMM);
                end
         // ---------------------------------------------------- SHI, TTAG
@@ -432,6 +483,7 @@ module decoder (
         8'h30: begin                                                               // LEAVE
                    d_sp_sel = RSP; d_sp_op = SP_LEAVE;                             // RSP = FP + 4, FP = R
                    ra(R_); d_load = 1; rd_(R_, RES_A);                             // r = R (FP's new value); R = the word at FP + 4
+                   d_chk[0] = 1;
                end
         8'h46, 8'h86, 8'hC6: begin                                                 // ENTER, ENTER2, ENTER3
                    d_sp_sel = RSP; d_sp_op = SP_ENTER;                             // RSP = RSP - 4 - 4n, FP = RSP - 4
@@ -440,6 +492,7 @@ module decoder (
                                              {6'h0, b3, b2, b1, 2'b00};
                    ra(R_); d_store = 1; d_wdata = 0;                               // the word at RSP = R
                    d_s3 = 3'd6; rd_(R_, RES_S3);                                   // R = the old FP
+                   d_chk[0] = 1; d_imm = b_const;                                  // the check: RSP - 4n
                end
         // ---------------------------------------------------- INC, DEC, INCW, DECW
         8'h28, 8'h29, 8'h2A, 8'h2B:                                                // T = T +- 1 / 4
@@ -472,6 +525,66 @@ module decoder (
                    d_imm = target; d_loop = 1;
                    rd_(reg6, RES_Y);                                               // reg = reg - 1
                    if (reg6 == R_) pop_(RSP);                                      // R: dropped at the end
+               end
+        // ---------------------------------------------------- WAIT, PUSHF, POPF
+        8'h37: begin a_const = next; jump_(ALWAYS, 0); d_wait = 1; end             // WAIT: held, then on to next
+        8'h38: begin ra(R_); push_(RSP, 0); d_s3 = 4'd3; rd_(R_, RES_S3); end      // PUSHF: push R, R = ST (with I)
+        8'h39: begin ra(R_); pop_(RSP); rd_(R_, RES_A);                            // POPF: ST = R (with I), pop R
+                     d_st_we = 1; d_ie = 2'b11; end
+        // ---------------------------------------------------- SET, SETB, SET2, SETB2
+        // The true value on A (-1, or 1 for SETB), the register on B (TZ tests it):
+        // execute writes A if the condition holds, else 0 (RES_SET). No flags.
+        8'h4B: if (set_ok) begin
+                   a_const = b1[0] ? 32'd1 : 32'hFFFF_FFFF; rb(T_);
+                   d_cond = b1[7:4]; rd_(T_, RES_SET);
+               end
+        8'h8B: if (set2_ok) begin
+                   a_const = b2[0] ? 32'd1 : 32'hFFFF_FFFF; rb(dst2);
+                   d_cond = b2[7:4]; rd_(dst2, RES_SET);
+               end
+        // ---------------------------------------------------- ADDI2, CMPI2
+        // the constant on A, the register on B (as INCR): ADDI2 = A + B, CMPI2 = B - A (RSB)
+        8'h8A: if (addi_ok) begin
+                   a_const = imm8b2; d_fmask = 4'b1111;
+                   d_alu_op = b1[6] ? A_RSB : A_ADD; d_cin = b1[6] ? CIN_1 : CIN_0;
+                   if (in_file) begin
+                       rb(reg6); if (!b1[6]) rd_(reg6, RES_Y);
+                   end else begin
+                       d_b_s3 = 1; s3_read(s3w);
+                       if (!b1[6]) begin d_res = RES_Y; s3_write(s3w); end
+                   end
+               end
+        // ---------------------------------------------------- ABS, CLZ, PCNT
+        8'h89: if (un_ok) begin
+                   ra(src2); d_cin = CIN_C; rd_(dst2, RES_Y);
+                   case (b1[7:6])
+                       2'b00:   begin d_alu_op = A_ABS;  d_fmask = 4'b1110; end   // V N Z
+                       2'b01:   begin d_alu_op = A_CLZ;  d_fmask = 4'b0110; end   // N Z
+                       default: begin d_alu_op = A_PCNT; d_fmask = 4'b0110; end
+                   endcase
+               end
+        // ---------------------------------------------------- LSL2 .. ROR2, LSL3 .. ROR3
+        // the value on A, the count on B (the shifter takes B[4:0]); flags as SHI
+        8'h98, 8'h99, 8'h9A, 8'h9B, 8'h9C:
+               if (f2_ok) begin
+                   ra(dst2); rb(src2); d_alu_op = sh_op; d_cin = CIN_C; d_fmask = 4'b1111;
+                   rd_(dst2, RES_Y);
+               end
+        8'hD8, 8'hD9, 8'hDA, 8'hDB, 8'hDC:
+               if (f3_ok) begin
+                   ra(s13); rb(s23); d_alu_op = sh_op; d_cin = CIN_C; d_fmask = 4'b1111;
+                   rd_(d3, RES_Y);
+               end
+        // ---------------------------------------------------- MIN2 .. MAXU2, MIN3 .. MAXU3
+        8'hA0, 8'hA1, 8'hA2, 8'hA3:
+               if (f2_ok) begin
+                   ra(dst2); rb(src2); d_alu_op = mm_op; d_cin = CIN_C; d_fmask = 4'b0110;
+                   rd_(dst2, RES_Y);
+               end
+        8'hE0, 8'hE1, 8'hE2, 8'hE3:
+               if (f3_ok) begin
+                   ra(s13); rb(s23); d_alu_op = mm_op; d_cin = CIN_C; d_fmask = 4'b0110;
+                   rd_(d3, RES_Y);
                end
         // ---------------------------------------------------- MOVR
         8'h43: if (b1[7]) ;                                                        // bit 7 must be 0

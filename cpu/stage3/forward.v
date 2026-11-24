@@ -49,6 +49,9 @@
 //   - load_use (no stall): the load goes from x_* to w_*, x_* becomes a bubble:
 //     from_w = from_x, from_w2 = from_x2, from_x = from_x2 = 0.
 //
+// hold (from execute: a WAIT waiting for a device) holds stage 3 the same way as a
+// load-use wait: load_use is 1 while it does, so execute sends bubbles into stage 4.
+//
 // ---------------------------------------------------------------- what it does not do
 // - PSP, RSP, FP live in stage 3 and need no forwarding.
 // - The regfile's outputs t, s, r, l are not forwarded: an instruction that needs T,
@@ -72,6 +75,7 @@ module forward (
     // a jump taken in execute: the instruction coming from decode at this edge is
     // thrown away (it becomes a bubble)
     input  wire        flush,
+    input  wire        hold,           // execute holds its instruction (WAIT): as a load-use wait
 
     // from stage 2, decode: the instruction and the operands it read
     input  wire        d_valid,
@@ -112,7 +116,7 @@ module forward (
     output reg         e_valid,
     output wire [31:0] e_a,            // operand A, forwarded
     output wire [31:0] e_b,            // operand B, forwarded
-    output wire        load_use,       // wait: an operand comes from a load in stage 4
+    output wire        load_use,       // wait: an operand comes from a load in stage 4, or hold
     output wire        advance         // stage 3 takes decode's instruction at the edge
 );
     // ================================================================ the operand registers
@@ -149,7 +153,7 @@ module forward (
     assign e_b = (b_fxr & x_wen) ? x_result : b_fx2 ? x2_data :
                  b_fw ? w_data : b_fw2 ? w2_data : b_val;
 
-    assign load_use = e_valid & x_load & (a_fx | b_fx);
+    assign load_use = e_valid & (x_load & (a_fx | b_fx) | hold);
 
     assign advance  = !mem_stall & !load_use;
 

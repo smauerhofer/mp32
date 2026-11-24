@@ -94,8 +94,8 @@ module execute_tb;
     reg        d_a_use, d_b_use;
     reg [5:0]  d_a_sel, d_b_sel;
     reg [31:0] d_a_const, d_b_const;
-    reg [4:0]  d_alu_op;  reg [1:0] d_cin;  reg [3:0] d_fmask;
-    reg        d_a_tmpl, d_b_s3;  reg [3:0] d_s3;  reg [2:0] d_res;
+    reg [5:0]  d_alu_op;  reg [1:0] d_cin;  reg [3:0] d_fmask;
+    reg        d_a_tmpl, d_b_s3;  reg [3:0] d_s3;  reg [3:0] d_res;
     reg        d_wen;  reg [5:0] d_rd;  reg d_x2_wen;  reg [1:0] d_x2_sel, d_x2;
     reg        d_load, d_store, d_signed, d_wdata, d_addr;  reg [1:0] d_size;
     reg [1:0]  d_sp_sel;  reg [2:0] d_sp_op;
@@ -157,7 +157,7 @@ module execute_tb;
                        pop_(PSP_); d_wen = 1; d_rd = S_; end
         K_DROT1: begin d_b_use = 1; d_b_sel = T_; push_(PSP_, 1); d_wen = 1; d_rd = T_; d_res = 4; end
         K_BIN:   begin d_a_use = 1; d_a_sel = S_; d_b_use = 1; d_b_sel = T_;
-                       d_alu_op = n_now[4:0];
+                       d_alu_op = {1'b0, n_now[4:0]};
                        d_cin = (n_now == A_ADD) ? 0 : (n_now == A_SUB) ? 1 : 2;
                        d_fmask = 4'b1111; pop_(PSP_);
                        d_wen = 1; d_rd = S_; d_x2_wen = 1; d_x2_sel = 0; d_x2 = 0; end
@@ -177,7 +177,7 @@ module execute_tb;
                        d_cin = 3; d_tl_shr = 1; d_wen = 1; d_rd = T_; end
         K_CMP:   begin d_a_use = 1; d_a_sel = S_; d_b_use = 1; d_b_sel = T_; d_alu_op = A_SUB;
                        d_cin = 1; d_fmask = 4'b1111; end
-        K_SH1:   begin d_a_use = 1; d_a_sel = T_; d_b_const = 1; d_alu_op = n_now[4:0];
+        K_SH1:   begin d_a_use = 1; d_a_sel = T_; d_b_const = 1; d_alu_op = {1'b0, n_now[4:0]};
                        d_cin = 2; d_fmask = 4'b1111; d_wen = 1; d_rd = T_; end
         K_LIT:   begin d_a_const = n_now; d_wen = 1; d_rd = T_; d_res = 1; end
         K_CBR:   begin d_a_const = n_now; d_b_use = 1; d_b_sel = T_;
@@ -244,6 +244,7 @@ module execute_tb;
         .d_th_y2(d_th_y2), .d_tl_shl(d_tl_shl), .d_tl_shr(d_tl_shr),
         .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(1'b0), .d_hl_we(1'b0), .d_loop(1'b0),
         .d_vec(1'b0), .d_hw(1'b0), .d_ie(2'b00), .d_vec_we(1'b0),   // INTR, EXC, I, VEC: in stage2/decode_tb.v
+        .d_lim_we(4'h0), .d_chk(2'b00), .d_wait(1'b0), .d_pc(32'h0), // the stack limits, WAIT: there too
         .irq(1'b0), .irq_num(8'h0),                                  // and ../irq_tb.v
         .advance(advance),
         .mem_stall(mem_stall),

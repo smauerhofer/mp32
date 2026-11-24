@@ -63,6 +63,8 @@ module lisp_tb;
     // ---- stage 2
     wire        advance, ex_redirect;
     wire [31:0] ex_redirect_pc;
+    wire        ex_redirect_exc;
+    wire [7:0]  ex_redirect_exc_n;
     wire        w_en, w2_en;
     wire [5:0]  w_sel;
     wire [1:0]  w2_sel;
@@ -71,8 +73,8 @@ module lisp_tb;
     wire        d_valid, d_a_use, d_b_use;
     wire [5:0]  d_a_sel, d_b_sel, d_rd;
     wire [31:0] d_a_data, d_b_data;
-    wire [4:0]  d_alu_op;  wire [1:0] d_cin;  wire [3:0] d_fmask;
-    wire        d_a_tmpl, d_b_s3;  wire [3:0] d_s3;  wire [2:0] d_res;
+    wire [5:0]  d_alu_op;  wire [1:0] d_cin;  wire [3:0] d_fmask;
+    wire        d_a_tmpl, d_b_s3;  wire [3:0] d_s3;  wire [3:0] d_res;
     wire        d_b_imm;  wire [31:0] d_imm;
     wire        d_wen, d_x2_wen;  wire [1:0] d_x2_sel, d_x2;
     wire        d_load, d_store, d_signed, d_wdata, d_addr;  wire [1:0] d_size;
@@ -81,6 +83,7 @@ module lisp_tb;
     wire        d_jump, d_tgt;  wire [3:0] d_cond;
     wire        d_trap, d_hl_we, d_loop;
     wire        d_vec, d_hw, d_vec_we;  wire [1:0] d_ie;
+    wire [3:0]  d_lim_we;  wire [1:0] d_chk;  wire d_wait;  wire [31:0] d_pc;
     wire [31:0] t, s, l;
 
     decode dec (
@@ -89,6 +92,7 @@ module lisp_tb;
         .f_inject(f_inject),
         .f_next_instr(f_next_instr), .f_load(f_load),
         .advance(advance), .ex_redirect(ex_redirect), .ex_redirect_pc(ex_redirect_pc),
+        .ex_redirect_exc(ex_redirect_exc), .ex_redirect_exc_n(ex_redirect_exc_n),
         .redirect(redirect), .redirect_pc(redirect_pc),
         .redirect_exc(redirect_exc), .redirect_exc_n(redirect_exc_n),
         .w_en(w_en), .w_sel(w_sel), .w_data(w_data),
@@ -104,6 +108,7 @@ module lisp_tb;
         .d_th_y2(d_th_y2), .d_tl_shl(d_tl_shl), .d_tl_shr(d_tl_shr), .d_st_we(d_st_we),
         .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(d_trap), .d_hl_we(d_hl_we), .d_loop(d_loop),
         .d_vec(d_vec), .d_hw(d_hw), .d_ie(d_ie), .d_vec_we(d_vec_we),
+        .d_lim_we(d_lim_we), .d_chk(d_chk), .d_wait(d_wait), .d_pc(d_pc),
         .t(t), .s(s), .r(), .l(l)
     );
 
@@ -129,6 +134,7 @@ module lisp_tb;
         .d_th_y2(d_th_y2), .d_tl_shl(d_tl_shl), .d_tl_shr(d_tl_shr), .d_st_we(d_st_we),
         .d_jump(d_jump), .d_cond(d_cond), .d_tgt(d_tgt), .d_trap(d_trap), .d_hl_we(d_hl_we), .d_loop(d_loop),
         .d_vec(d_vec), .d_hw(d_hw), .d_ie(d_ie), .d_vec_we(d_vec_we),
+        .d_lim_we(d_lim_we), .d_chk(d_chk), .d_wait(d_wait), .d_pc(d_pc),
         .irq(1'b0), .irq_num(8'h0),
         .advance(advance), .mem_stall(mem_stall),
         .x_valid(x_valid), .x_load(x_load), .x_store(x_store), .x_size(x_size),
@@ -137,6 +143,7 @@ module lisp_tb;
         .w_en(w_en), .w_sel(w_sel), .w_data(w_data),
         .w2_en(w2_en), .w2_sel(w2_sel), .w2_data(w2_data),
         .redirect(ex_redirect), .redirect_pc(ex_redirect_pc),
+        .redirect_exc(ex_redirect_exc), .redirect_exc_n(ex_redirect_exc_n),
         .flags_out(flags_out), .psp(psp), .rsp(rsp), .fp(fp), .tmpl(tmpl), .tmph(tmph), .hlim(hlim),
         .vec(), .ie(), .ie_off()
     );

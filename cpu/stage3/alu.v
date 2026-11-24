@@ -72,6 +72,15 @@
 //   11100  TADD    a + b (tagged, for LISP)        0        carry
 //   11101  TSUB    a - b (tagged)                  0        no borrow
 //   11110  TTAG    (a ^ b) & (b >> 8), low 8 bits  0        cin
+//  100000  CLZ     the number of leading 0 bits    0        cin
+//                  of a (32 when a = 0)
+//  100001  PCNT    the number of 1 bits in a       0        cin
+//  100010  ABS     |a| (0x8000_0000 stays,         0        cin
+//                  V = 1)
+//  100011  MIN     the smaller of a, b (signed)    0        cin
+//  100100  MAX     the larger of a, b (signed)     0        cin
+//  100101  MINU    the smaller of a, b (unsigned)  0        cin
+//  100110  MAXU    the larger of a, b (unsigned)   0        cin
 //   others: as ADD
 //
 // RSB and RSC are SUB and SBC with a and b the other way round: the adder inverts a
@@ -110,12 +119,21 @@
 // and N are those of y (what is kept); V is the overflow of the subtraction when it
 // is taken, 0 when not.
 //
+// CLZ, PCNT and ABS work on a alone. CLZ counts the 0 bits above the highest 1 (32 for
+// 0), PCNT the 1 bits. ABS is a for a >= 0 and 0 - a for a < 0; |0x8000_0000| does not
+// fit, so it stays 0x8000_0000 and V = 1 (V = 0 for all others). Z and N are those of y,
+// C is cin.
+//
+// MIN, MAX, MINU, MAXU pick a or b. They compare with the adder (a - b, its borrow and
+// its signed "less than", N != V), so they take b, not bo; a tie gives a. Z and N are
+// those of y, C is cin, V is 0.
+//
 // For the 64-bit shifts a is the low word and b the high word; they shift by one bit,
 // through the carry for ROL64 / ROR64, so a 64-bit value can be shifted one bit per
 // instruction (as in a multiply or divide done by the program).
 
 module alu (
-    input  wire [4:0]  op,
+    input  wire [5:0]  op,
     input  wire [31:0] a,
     input  wire [31:0] b,
     input  wire [31:0] bo,             // operand B: for the shifter, divider, multipliers, TTAG
@@ -127,19 +145,22 @@ module alu (
     output wire [3:0]  flags_a,        // the flags of the adder: {V, N, Z, C}
     output wire [3:0]  flags_s         // the flags of ya (adder and logic ops)
 );
-    localparam [4:0] ADD = 5'd0,  ADC = 5'd1,  SUB = 5'd2,  SBC = 5'd3,
-                     AND = 5'd4,  OR  = 5'd5,  XOR = 5'd6,  NOT = 5'd7,
-                     LSL = 5'd8,  LSR = 5'd9,  ASR = 5'd10, ROR = 5'd11,
-                     LSL64 = 5'd12, LSR64 = 5'd13, ASR64 = 5'd14,
-                     ROL64 = 5'd15, ROR64 = 5'd16, CSUB = 5'd17, DIVS = 5'd18,
-                     MUL = 5'd19, SMUL = 5'd20, ASL = 5'd21,
-                     ROL = 5'd22, ROLC = 5'd23, RORC = 5'd24, MULS = 5'd25,
-                     RSB = 5'd26, RSC = 5'd27, TADD = 5'd28, TSUB = 5'd29, TTAG = 5'd30;
+    localparam [5:0] ADD = 6'd0,  ADC = 6'd1,  SUB = 6'd2,  SBC = 6'd3,
+                     AND = 6'd4,  OR  = 6'd5,  XOR = 6'd6,  NOT = 6'd7,
+                     LSL = 6'd8,  LSR = 6'd9,  ASR = 6'd10, ROR = 6'd11,
+                     LSL64 = 6'd12, LSR64 = 6'd13, ASR64 = 6'd14,
+                     ROL64 = 6'd15, ROR64 = 6'd16, CSUB = 6'd17, DIVS = 6'd18,
+                     MUL = 6'd19, SMUL = 6'd20, ASL = 6'd21,
+                     ROL = 6'd22, ROLC = 6'd23, RORC = 6'd24, MULS = 6'd25,
+                     RSB = 6'd26, RSC = 6'd27, TADD = 6'd28, TSUB = 6'd29, TTAG = 6'd30,
+                     CLZ = 6'd32, PCNT = 6'd33, ABS = 6'd34,
+                     MIN = 6'd35, MAX = 6'd36, MINU = 6'd37, MAXU = 6'd38;
 
     // ---- the adder: a' + b' + c', for add and subtract. a - b = a + ~b + 1 inverts b;
     // the reverse subtract b - a = ~a + b + 1 (RSB, RSC) inverts a instead.
     wire        rev   = (op == RSB) | (op == RSC);
-    wire        sub   = (op == SUB) | (op == SBC) | (op == CSUB) | (op == TSUB);
+    wire        mm    = (op == MIN) | (op == MAX) | (op == MINU) | (op == MAXU);
+    wire        sub   = (op == SUB) | (op == SBC) | (op == CSUB) | (op == TSUB) | mm;
     wire [31:0] a_in  = rev ? ~a : a;
     wire [31:0] b_in  = sub ? ~b : b;
     wire        c_in  = (op == ADC) | (op == SBC) | (op == RSC) ? cin : sub | rev;
@@ -184,6 +205,24 @@ module alu (
     wire [31:0] lsl_top = ~(32'hFFFF_FFFF >> n);
     wire        lsl_v   = |(lsl_dif & lsl_top);
 
+    // ---- MIN, MAX, MINU, MAXU: a - b on the adder; a < b signed: N != V, unsigned: borrow
+    wire        lt_s  = sum[31] ^ ovf;
+    wire        lt_u  = !sum[32];
+
+    // ---- CLZ, PCNT, ABS
+    reg  [5:0]  clz_n;
+    reg  [5:0]  pcnt_n;
+    integer     k;
+    always @* begin
+        clz_n = 6'd32;
+        for (k = 0; k < 32; k = k + 1)
+            if (a[k]) clz_n = 6'd31 - k[5:0];            // the highest 1 wins (last)
+        pcnt_n = 6'd0;
+        for (k = 0; k < 32; k = k + 1)
+            pcnt_n = pcnt_n + {5'd0, a[k]};
+    end
+    wire [31:0] neg_a = ~a + 32'd1;
+
     reg c, v;
     always @* begin
         y = 32'h0; y2 = 32'h0; c = cin; v = 1'b0;
@@ -209,6 +248,13 @@ module alu (
         ASL:   begin y = {a[31], a[29:0], 1'b0}; c = a[30]; v = a[31] ^ a[30]; end
         TADD, TSUB: begin y = sum[31:0]; c = sum[32]; v = ovf | (|{a[1:0], b[1:0]}); end
         TTAG:  begin y = {24'h0, (a[7:0] ^ bo[7:0]) & bo[15:8]}; end
+        CLZ:   begin y = {26'h0, clz_n}; end
+        PCNT:  begin y = {26'h0, pcnt_n}; end
+        ABS:   begin y = a[31] ? neg_a : a; v = (a == 32'h8000_0000); end
+        MIN:   begin y = lt_s ? a : b; end
+        MAX:   begin y = lt_s ? b : a; end
+        MINU:  begin y = lt_u ? a : b; end
+        MAXU:  begin y = lt_u ? b : a; end
         default: begin y = sum[31:0]; c = sum[32]; v = ovf; end
         endcase
     end

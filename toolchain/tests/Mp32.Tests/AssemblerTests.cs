@@ -583,4 +583,104 @@ public class AssemblerTests
     [Fact]
     public void VectorRegisterIsAStage3Register() =>
         Assert.Contains(Asm.Errors("  ADD2 FP, VEC\n"), e => e.Contains("at most one"));
+
+    private static string Bytes(string line, int n) => Asm.Hex(Asm.Code($"  {line}\n")[..n]);
+
+    [Theory]
+    [InlineData("WAIT", "37")]
+    [InlineData("PUSHF", "38")]
+    [InlineData("POPF", "39")]
+    public void WaitAndTheStatusRegister(string line, string bytes) => Assert.Equal(bytes, Bytes(line, 1));
+
+    [Theory]
+    [InlineData("SET EQ", "4B 00")]
+    [InlineData("SET TZ", "4B F0")]
+    [InlineData("SETB LT", "4B B1")]
+    [InlineData("SETB hs", "4B 21")]
+    [InlineData("SET2 r3, GE", "8B 03 A0")]
+    [InlineData("SETB2 T, NE", "8B 20 11")]
+    [InlineData("SET2 L, TZ", "8B 23 F0")]
+    public void ConditionToValue(string line, string bytes) =>
+        Assert.Equal(bytes, Bytes(line, (bytes.Length + 1) / 3));
+
+    [Theory]
+    [InlineData("SET XX", "condition expected")]
+    [InlineData("SET2 FP, EQ", "r0..r31, T, S, R or L")]
+    [InlineData("SET2 r1", "operand")]
+    public void ConditionToValueErrors(string line, string error) =>
+        Assert.Contains(Asm.Errors($"  {line}\n"), e => e.Contains(error));
+
+    [Theory]
+    [InlineData("ADDI2 r1, -5", "8A 01 FB")]
+    [InlineData("ADDI2 T, 127", "8A 20 7F")]
+    [InlineData("CMPI2 PSP, 100", "8A 64 64")]
+    [InlineData("CMPI2 r0, -128", "8A 40 80")]
+    [InlineData("ADDI2 RSPH, 4", "8A 30 04")]
+    public void AddAndCompareAConstant(string line, string bytes) => Assert.Equal(bytes, Bytes(line, 3));
+
+    [Theory]
+    [InlineData("ADDI2 r1, 128", "out of range")]
+    [InlineData("CMPI2 r1, -129", "out of range")]
+    [InlineData("ADDI2 PC, 1", "cannot be PC")]
+    [InlineData("ADDI2 r1, label\nlabel:", "constant")]
+    public void AddAndCompareAConstantErrors(string line, string error) =>
+        Assert.Contains(Asm.Errors($"  {line}\n"), e => e.Contains(error));
+
+    [Theory]
+    [InlineData("ABS r1, r2", "89 01 02")]
+    [InlineData("CLZ r4, T", "89 44 20")]
+    [InlineData("PCNT S, L", "89 A1 23")]
+    [InlineData("CLZ r4", "89 44 04")]       // one register: itself
+    [InlineData("ABS", "89 20 20")]          // none: T
+    public void AbsCountLeadingZerosPopulationCount(string line, string bytes) => Assert.Equal(bytes, Bytes(line, 3));
+
+    [Theory]
+    [InlineData("LSL2 r1, r2", "98 01 02")]
+    [InlineData("LSR2 T, S", "99 20 21")]
+    [InlineData("ASR2 r31, L", "9A 1F 23")]
+    [InlineData("ROL2 r0, R", "9B 00 22")]
+    [InlineData("ROR2 r5, r6", "9C 05 06")]
+    [InlineData("LSL3 T, S, r1", "D8 20 21 01")]
+    [InlineData("LSR3 r1, r2, r3", "D9 01 02 03")]
+    [InlineData("ASR3 r1, r2, r3", "DA 01 02 03")]
+    [InlineData("ROL3 r1, r2, r3", "DB 01 02 03")]
+    [InlineData("ROR3 r1, r2, r3", "DC 01 02 03")]
+    public void ShiftsByARegister(string line, string bytes) =>
+        Assert.Equal(bytes, Bytes(line, (bytes.Length + 1) / 3));
+
+    [Theory]
+    [InlineData("MIN2 r1, r2", "A0 01 02")]
+    [InlineData("MAX2 r1, r2", "A1 01 02")]
+    [InlineData("MINU2 r1, r2", "A2 01 02")]
+    [InlineData("MAXU2 T, S", "A3 20 21")]
+    [InlineData("MIN3 r1, r2, r3", "E0 01 02 03")]
+    [InlineData("MAX3 r1, r2, r3", "E1 01 02 03")]
+    [InlineData("MINU3 r1, r2, r3", "E2 01 02 03")]
+    [InlineData("MAXU3 T, S, r9", "E3 20 21 09")]
+    public void MinimumAndMaximum(string line, string bytes) =>
+        Assert.Equal(bytes, Bytes(line, (bytes.Length + 1) / 3));
+
+    [Theory]
+    [InlineData("LSL2 PSP, r1")]
+    [InlineData("LSR3 r1, r2, ST")]
+    [InlineData("MIN2 r1, PC")]
+    [InlineData("MAXU3 HLIM, r1, r2")]
+    [InlineData("ABS r1, FP")]
+    public void RegisterFileOnly(string line) =>
+        Assert.Contains(Asm.Errors($"  {line}\n"), e => e.Contains("r0..r31, T, S, R or L"));
+
+    [Theory]
+    [InlineData("MOVR PSPL, T", "43 2D")]
+    [InlineData("MOVR PSPH, T", "43 2E")]
+    [InlineData("MOVR RSPL, T", "43 2F")]
+    [InlineData("MOVR RSPH, T", "43 30")]
+    [InlineData("MOVR T, RSPH", "43 70")]
+    [InlineData("MOV2 RSPL, r4", "83 2F 04")]
+    [InlineData("MOVI2 PSPH, 0", "83 AE 00")]
+    public void StackLimitRegisters(string line, string bytes) =>
+        Assert.Equal(bytes, Bytes(line, (bytes.Length + 1) / 3));
+
+    [Fact]
+    public void StackLimitsAreStage3Registers() =>
+        Assert.Contains(Asm.Errors("  ADD2 PSPL, RSP\n"), e => e.Contains("at most one"));
 }

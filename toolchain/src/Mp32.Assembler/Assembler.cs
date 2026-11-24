@@ -921,6 +921,70 @@ public sealed class Assembler(AssemblerOptions? options = null) : IEvalContext
                     Operand = ParseExpr(t, ops[1].Start, ops[1].End, sl),
                 });
                 break;
+            case OperandForm.Cond:                                  // SET, SETB
+                Need(ops, 1, 1, word);
+                AddStmt(new InstrStmt
+                {
+                    Src = sl, Sec = CurrentSection, Op = op, Form = op.Form, Size = op.Length,
+                    Cond = ParseCondition(t, ops[0]),
+                });
+                break;
+            case OperandForm.RegCond:                               // SET2, SETB2
+                Need(ops, 2, 2, word);
+                AddStmt(new InstrStmt
+                {
+                    Src = sl, Sec = CurrentSection, Op = op, Form = op.Form, Size = op.Length,
+                    Register = ParseFileRegister(t, ops[0], op.Mnemonic), Cond = ParseCondition(t, ops[1]),
+                });
+                break;
+            case OperandForm.RegImm8:                               // ADDI2, CMPI2
+            {
+                Need(ops, 2, 2, word);
+                int reg = ParseRegister(t, ops[0]);
+                if (reg == (0x20 | Isa.SpecialRegisters["PC"]))
+                    throw new AsmException($"{op.Mnemonic}: the register cannot be PC", t[ops[0].Start].Column);
+                AddStmt(new InstrStmt
+                {
+                    Src = sl, Sec = CurrentSection, Op = op, Form = op.Form, Size = op.Length,
+                    Register = reg, Operand = ParseExpr(t, ops[1].Start, ops[1].End, sl),
+                });
+                break;
+            }
+            case OperandForm.Unary:                                 // ABS, CLZ, PCNT: dst, src / reg / (T)
+            {
+                Need(ops, 0, 2, word);
+                int dst = ops.Count > 0 ? ParseFileRegister(t, ops[0], op.Mnemonic) : Isa.RegT;
+                int src = ops.Count > 1 ? ParseFileRegister(t, ops[1], op.Mnemonic) : dst;
+                AddStmt(new InstrStmt
+                {
+                    Src = sl, Sec = CurrentSection, Op = op, Form = op.Form, Size = op.Length,
+                    Register = dst, Register2 = src,
+                });
+                break;
+            }
+            case OperandForm.FileRegReg:
+            {
+                Need(ops, 2, 2, word);
+                AddStmt(new InstrStmt
+                {
+                    Src = sl, Sec = CurrentSection, Op = op, Form = op.Form, Size = op.Length,
+                    Register = ParseFileRegister(t, ops[0], op.Mnemonic),
+                    Register2 = ParseFileRegister(t, ops[1], op.Mnemonic),
+                });
+                break;
+            }
+            case OperandForm.FileRegRegReg:
+            {
+                Need(ops, 3, 3, word);
+                AddStmt(new InstrStmt
+                {
+                    Src = sl, Sec = CurrentSection, Op = op, Form = op.Form, Size = op.Length,
+                    Register = ParseFileRegister(t, ops[0], op.Mnemonic),
+                    Register2 = ParseFileRegister(t, ops[1], op.Mnemonic),
+                    Register3 = ParseFileRegister(t, ops[2], op.Mnemonic),
+                });
+                break;
+            }
             case OperandForm.RegRegReg:
             {
                 Need(ops, 3, 3, word);
@@ -963,7 +1027,16 @@ public sealed class Assembler(AssemblerOptions? options = null) : IEvalContext
         if (op.End - op.Start == 1 && t[op.Start].Kind == TokenKind.Ident &&
             Isa.TryParseRegister(t[op.Start].Text, out var r))
             return r;
-        throw new AsmException("register expected: r0..r31, T, S, R, L, PSP, RSP, FP, PC, TMPL, TMPH, ST", t[op.Start].Column);
+        throw new AsmException("register expected: r0..r31, T, S, R, L, PSP, RSP, FP, PC, TMPL, TMPH, ST, HLIM, VEC, PSPL, PSPH, RSPL, RSPH", t[op.Start].Column);
+    }
+
+    /// <summary>A register of the register file (r0..r31, T, S, R, L): the register shifts, MIN .. MAXU, ABS, CLZ, PCNT, SET2.</summary>
+    private static int ParseFileRegister(List<Token> t, (int Start, int End) op, string mnemonic)
+    {
+        int r = ParseRegister(t, op);
+        if (!Isa.IsFileReg(r))
+            throw new AsmException($"{mnemonic}: the registers must be r0..r31, T, S, R or L", t[op.Start].Column);
+        return r;
     }
 
     // ------------------------------------------------------------------ checks after pass 1
@@ -1239,10 +1312,30 @@ public sealed class Assembler(AssemblerOptions? options = null) : IEvalContext
                 data[a + 2] = (byte)i.Register2;
                 return;
             case OperandForm.RegRegReg:
+            case OperandForm.FileRegRegReg:
                 data[a] = i.Op!.Opcode;
                 data[a + 1] = (byte)i.Register;              // opx 00
                 data[a + 2] = (byte)i.Register2;
                 data[a + 3] = (byte)i.Register3;
+                return;
+            case OperandForm.FileRegReg:
+                data[a] = i.Op!.Opcode;
+                data[a + 1] = (byte)i.Register;              // opx 00
+                data[a + 2] = (byte)i.Register2;
+                return;
+            case OperandForm.Unary:
+                data[a] = i.Op!.Opcode;
+                data[a + 1] = (byte)(Isa.UnaryBits(i.Op.Mnemonic) | i.Register);
+                data[a + 2] = (byte)i.Register2;
+                return;
+            case OperandForm.Cond:
+                data[a] = i.Op!.Opcode;
+                data[a + 1] = (byte)((i.Cond << 4) | Isa.SetOneBit(i.Op.Mnemonic));
+                return;
+            case OperandForm.RegCond:
+                data[a] = i.Op!.Opcode;
+                data[a + 1] = (byte)i.Register;              // opx 00
+                data[a + 2] = (byte)((i.Cond << 4) | Isa.SetOneBit(i.Op.Mnemonic));
                 return;
         }
 
@@ -1314,6 +1407,15 @@ public sealed class Assembler(AssemblerOptions? options = null) : IEvalContext
                 data[a + 2] = (byte)v2.Num;
                 return;
             }
+            case OperandForm.RegImm8:
+                if (!v.IsConstant)
+                    throw new AsmException($"{i.Op!.Mnemonic} needs a constant, not an address", col);
+                if (!Isa.FitsSigned(v.Num, 8))
+                    throw new AsmException($"{i.Op!.Mnemonic}: constant {Fields.Format(v.Num)} out of range -$80..$7F", col);
+                data[a] = i.Op!.Opcode;
+                data[a + 1] = (byte)(Isa.Imm8Bits(i.Op.Mnemonic) | i.Register);
+                data[a + 2] = (byte)v.Num;
+                return;
             case OperandForm.MovImm:
                 // the constant is in byte 2, where no relocation can go: it must be known here
                 if (!v.IsConstant)

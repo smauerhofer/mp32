@@ -13,13 +13,19 @@
 //           told it it is done (a store to DEV + 0 / DEV + 4); it may ask again while
 //           its handler still runs.
 //
+// Both have device 2 (line 2, vector 18): a timer the program starts with a store of a
+// number of ticks to DEV + 32; when they have passed it asks, until its handler stores
+// to DEV + 36. The program waits for it with WAIT, with I = 1 and with I = 0.
+//
 // The program also does a system call (INTR 48), runs an undefined opcode (exception
-// 1) and EXC 3, traps from CONS (exception 4), has a critical section (CLI .. SEI) and
+// 1) and EXC 3, traps from CONS (exception 4), has a critical section (PUSHF, CLI ..
+// POPF, with one nested in it), raises the stack exceptions 8 .. 11 on purpose, and
 // moves VEC to a second table halfway (see irq.s). Checked at the end:
 //   - both processors end with the same registers (r0 .. r15, T, S, R, L, PSP, RSP, FP,
 //     the flags, VEC) and the same memory (but for the free parts of the stacks, where
 //     the handlers push): an interrupt changes nothing the program can see;
-//   - the results irq.s lists (r10, r11, r12, r13) in both;
+//   - the results irq.s lists (r10, r11, r12, r13; r16, r17, r30, r31, the stack
+//     exceptions; r18, device 2) in both;
 //   - busy: every interrupt asked for was handled once (r20, r24 and the stores to
 //     DEV + 0 / + 4 equal what the devices asked for), none in the critical section
 //     and no vector that should not be used (no store to DEV + 12);
@@ -100,7 +106,22 @@ module irq_tb;
                 if (errors < 20) $display("memory %h: quiet %h, busy %h", k * 4, quiet.dmem[k], busy.dmem[k]);
             end
 
+        for (k = 16; k < 32; k = k + 1)                                     // the main program's
+            if ((k < 20 || k >= 30) &&                                       // (not the handlers')
+                quiet.processor.dec.regs.regs[k] !== busy.processor.dec.regs.regs[k]) begin
+                errors = errors + 1;
+                $display("r%0d: quiet %h, busy %h", k, quiet.processor.dec.regs.regs[k],
+                         busy.processor.dec.regs.regs[k]);
+            end
+
         // ---- the results of the program
+        expect("r16: PSP overflow",      quiet.processor.dec.regs.regs[16], 32'd1);
+        expect("r17: PSP underflow",     quiet.processor.dec.regs.regs[17], 32'd1);
+        expect("r30: RSP overflow",      quiet.processor.dec.regs.regs[30], 32'd2);
+        expect("r31: RSP underflow",     quiet.processor.dec.regs.regs[31], 32'd1);
+        expect("r18: device 2 (WAIT)",   quiet.processor.dec.regs.regs[18], 32'd2);
+        expect("limits off at the end",  quiet.processor.ex.pspl | quiet.processor.ex.psph |
+                                         quiet.processor.ex.rspl | quiet.processor.ex.rsph, 32'h0);
         expect("r10: undefined opcodes", quiet.processor.dec.regs.regs[10], 32'd19);
         expect("r11: EXC 3",             quiet.processor.dec.regs.regs[11], 32'd19);
         expect("r12: VEC read back",     quiet.processor.dec.regs.regs[12], 32'h400);
@@ -115,9 +136,11 @@ module irq_tb;
         expect("busy: device 1 done",    busy_acked1, busy_raised1);
         expect("busy: r20 (device 0)",   busy.processor.dec.regs.regs[20], busy_raised0);
         expect("busy: r24 (device 1)",   busy.processor.dec.regs.regs[24], busy_raised1);
-        expect("busy: INTR taken",       busy_taken, busy_raised0 + busy_raised1);
+        expect("busy: INTR taken",       busy_taken, busy_raised0 + busy_raised1 + 2);   // + device 2
         expect("busy: in service at the end", busy.irq_ctrl.isr, 8'h00);
-        expect("busy: MASK",             busy.irq_ctrl.mask, 8'h03);
+        expect("busy: MASK",             busy.irq_ctrl.mask, 8'h07);
+        expect("quiet: device 2 done",   quiet.acked2, 32'd2);
+        expect("busy: device 2 done",    busy.acked2, 32'd2);
         if (busy.processor.dec.regs.regs[23] < 20) begin
             errors = errors + 1;
             $display("busy: device 0 interrupted device 1's handler only %0d times",
@@ -154,8 +177,10 @@ module irq_tb_system #(
     localparam [31:0] DEV = 32'h800;
     integer seed = SEED;
 
-    // ---- the devices
-    reg  [1:0] pend;
+    // ---- the devices (2: the timer the program starts)
+    reg  [2:0] pend;
+    reg  [31:0] timer;
+    reg  [31:0] acked2;
 
     // ---- the processor
     wire         line_sel, data_sel, data_we;
@@ -207,6 +232,7 @@ module irq_tb_system #(
 
     wire is_dev  = (data_addr[31:4] == DEV[31:4]);
     wire is_irqc = (data_addr[31:4] == DEV[31:4] + 28'd1);     // DEV + 16
+    wire is_dev2 = (data_addr[31:4] == DEV[31:4] + 28'd2);     // DEV + 32
 
     // ---- the interrupt controller: its registers at DEV + 16. A write goes to it once,
     // in the tick after the access ends (irqc_wr); a read takes its io_rdata.
@@ -216,7 +242,7 @@ module irq_tb_system #(
     reg  [31:0] irqc_wd = 0;
     wire [31:0] irqc_rdata;
     irqc irq_ctrl (
-        .clk(clk), .reset(reset), .lines({6'b000000, pend}),
+        .clk(clk), .reset(reset), .lines({5'b00000, pend}),
         .irq(irq), .irq_num(irq_num), .ack(irq_ack), .ack_num(irq_ack_num),
         .io_sel(irqc_wr), .io_we(1'b1), .io_be(irqc_wbe),
         .io_addr(irqc_wr ? irqc_wa : data_addr[3:2]), .io_wdata(irqc_wd),
@@ -229,7 +255,13 @@ module irq_tb_system #(
         if (reset) begin
             pend <= 0; done <= 0; error <= 0;
             raised0 <= 0; raised1 <= 0; acked0 <= 0; acked1 <= 0;
+            timer <= 0; acked2 <= 0;
         end else begin
+            // device 2: asks when its timer runs out
+            if (timer != 0) begin
+                timer <= timer - 1;
+                if (timer == 1) pend[2] <= 1;
+            end
             // the devices ask now and then (not after the end)
             if (INTERRUPTS && !done) begin
                 if (!pend[0] && ($random(seed) & 127) == 0) begin pend[0] <= 1; raised0 <= raised0 + 1; end
@@ -252,6 +284,12 @@ module irq_tb_system #(
                             2'd2: done <= 1;
                             default: begin error <= 1; $display("%m: a store to DEV + 12 (pc %h)", pc); end
                         endcase
+                    end else if (data_we && is_dev2) begin
+                        if (!data_addr[2]) timer <= data_wdata;                 // + 32: ask in n ticks
+                        else begin                                               // + 36: done
+                            if (!pend[2]) begin error <= 1; $display("device 2 done, but it did not ask"); end
+                            pend[2] <= 0; acked2 <= acked2 + 1;
+                        end
                     end else if (is_irqc) begin
                         if (data_we) begin
                             irqc_wr <= 1; irqc_wa <= data_addr[3:2];

@@ -56,9 +56,10 @@ in the order CMP3 writes them, and shows the interrupt flag I in bit 4:
 
     bit 0 C    bit 1 Z    bit 2 N    bit 3 V    bit 4 I (read only)    bits 31..5: read as 0
 
-I is changed only by CLI, SEI, RTI and a device's interrupt (see Interrupts and
+I is changed only by CLI, SEI, RTI, POPF and a device's interrupt (see Interrupts and
 exceptions): a write to ST leaves it as it is, so a handler that saves ST and puts it
-back does not turn interrupts on early.
+back does not turn interrupts on early. PUSHF and POPF save and restore the whole of
+ST, I with it (see PUSHF, POPF).
 
 Any instruction that names a register can use it: `MOVR T, ST` reads the flags,
 `MOVR ST, T` sets all four from T's bits 3..0 (the bits above are dropped),
@@ -75,7 +76,8 @@ instruction.
     ANDR ST, T      ; clear C (CLC)
 
 ST is a register of stage 3, so the limits of the others hold for it: in ADD2 ..
-CMP3 at most one operand (source) of PSP, RSP, FP, TMPL, TMPH, ST, HLIM.
+CMP3 at most one operand (source) of PSP, RSP, FP, TMPL, TMPH, ST, HLIM, VEC, PSPL,
+PSPH, RSPL, RSPH.
 
 ## Opcodes
 
@@ -136,6 +138,9 @@ CMP3 at most one operand (source) of PSP, RSP, FP, TMPL, TMPH, ST, HLIM.
 | 0x34   | 1      | CLI      | I = 0: no interrupts from devices |
 | 0x35   | 1      | SEI      | I = 1: interrupts from devices on |
 | 0x36   | 1      | RTI      | the end of an interrupt handler: RET, and I = 1 |
+| 0x37   | 1      | WAIT     | wait until a device asks for an interrupt (whatever I is), then go on; with I = 1 the interrupt is taken right after |
+| 0x38   | 1      | PUSHF    | push R onto the return stack, R = ST (the flags and I) |
+| 0x39   | 1      | POPF     | ST = R, the flags and I (bit 4); pop the return stack into R |
 | 0x40   | 2      | LIT8     | T = an 8-bit signed constant (byte 1) |
 | 0x41   | 2      | CJMPL    | if the condition (byte 1 bits 7..4) holds: PC[3:0] = byte 1 bits 3..0 (a jump within the line) |
 | 0x42   | 2      | JSRS     | call: push R onto the return stack, R = the next instruction, jump to it + an 8-bit signed offset |
@@ -148,6 +153,8 @@ CMP3 at most one operand (source) of PSP, RSP, FP, TMPL, TMPH, ST, HLIM.
 | 0x47   | 2      | LSLI .. RORI | SHI: T shifted / rotated by a constant 0 .. 31 (byte 1: op in bits 7..5, count in 4..0); flags C Z N V |
 | 0x49   | 2      | INTR     | interrupt n (byte 1, 0 .. 255): push R onto the return stack, R = the next instruction, jump to VEC + 4n |
 | 0x4A   | 2      | EXC      | exception n (byte 1): push R onto the return stack, R = this instruction, jump to VEC + 4n |
+| 0x4B   | 2      | SET      | byte 1 = cond (7..4), 0 (3..1), 0 (0): T = -1 if the condition holds, else 0; no flags |
+| 0x4B   | 2      | SETB     | as SET with byte 1 bit 0 = 1: T = 1 if the condition holds, else 0 |
 | 0x48   | 2      | UNEXT    | if R != 0: R = R - 1 and jump within the line (PC[3:0] = byte 1 bits 3..0); else drop R (pop the return stack into R); no flags |
 | 0x50   | 2      | ADDR     | add T to a register, or a register to T (the register named as in MOVR); flags C Z N V |
 | 0x51   | 2      | ADCR     | as ADDR, with the carry: + C; flags C Z N V |
@@ -167,6 +174,13 @@ CMP3 at most one operand (source) of PSP, RSP, FP, TMPL, TMPH, ST, HLIM.
 | 0x86   | 3      | ENTER2   | ENTER with a 16-bit unsigned n words (bytes 1, 2) |
 | 0x87   | 3      | TTAG     | Z = ((T & mask) == value), mask byte 1, value byte 2 (the low 8 bits of T); only Z changes |
 | 0x88   | 3      | NEXT2    | if reg != 0 (byte 1): reg = reg - 1 and jump to the next instruction + an 8-bit signed offset (byte 2); else for R drop R; no flags |
+| 0x89   | 3      | ABS      | byte 1 = 00 dst: dst = \|src\| (byte 2); flags Z N V (V: 0x8000_0000), C unchanged |
+| 0x89   | 3      | CLZ      | byte 1 = 01 dst: dst = the number of leading 0 bits of src (32 for 0); flags Z N |
+| 0x89   | 3      | PCNT     | byte 1 = 10 dst: dst = the number of 1 bits of src; flags Z N |
+| 0x8A   | 3      | ADDI2    | byte 1 = 00 reg: reg = reg + a signed 8-bit constant (byte 2); flags C Z N V |
+| 0x8A   | 3      | CMPI2    | byte 1 = 01 reg: the flags of reg - the constant, as CMP; nothing written |
+| 0x8B   | 3      | SET2     | byte 1 = 00 reg, byte 2 = cond (7..4), 0 (3..1), 0 (0): reg = -1 if the condition holds, else 0 (TZ: reg == 0); no flags |
+| 0x8B   | 3      | SETB2    | as SET2 with byte 2 bit 0 = 1: reg = 1 or 0 |
 | 0x90   | 3      | ADD2     | dst = dst + src: any two registers (byte 1 the destination and source 1, byte 2 source 2); flags C Z N V |
 | 0x91   | 3      | ADC2     | dst = dst + src + C, as ADD2; flags C Z N V |
 | 0x92   | 3      | SUB2     | dst = dst - src, as ADD2; flags C Z N V (6502) |
@@ -175,6 +189,15 @@ CMP3 at most one operand (source) of PSP, RSP, FP, TMPL, TMPH, ST, HLIM.
 | 0x95   | 3      | OR2      | dst = dst \| src, as ADD2; flags Z N V (V = bit 30), C unchanged |
 | 0x96   | 3      | XOR2     | dst = dst ^ src, as ADD2; flags Z N V (V = bit 30), C unchanged |
 | 0x97   | 3      | CMP2     | flags of dst - src as SUB; nothing written |
+| 0x98   | 3      | LSL2     | dst = dst << src[4:0] (byte 1 dst, byte 2 src: r0 .. r31, T, S, R, L); flags as LSLI |
+| 0x99   | 3      | LSR2     | dst = dst >> src[4:0], 0s in; flags as LSRI |
+| 0x9A   | 3      | ASR2     | dst = dst >> src[4:0], the sign kept; flags as ASRI |
+| 0x9B   | 3      | ROL2     | dst rotated left by src[4:0]; flags as ROLI |
+| 0x9C   | 3      | ROR2     | dst rotated right by src[4:0]; flags as RORI |
+| 0xA0   | 3      | MIN2     | dst = the smaller of dst, src (signed); flags Z N |
+| 0xA1   | 3      | MAX2     | dst = the larger of dst, src (signed); flags Z N |
+| 0xA2   | 3      | MINU2    | dst = the smaller of dst, src (unsigned); flags Z N |
+| 0xA3   | 3      | MAXU2    | dst = the larger of dst, src (unsigned); flags Z N |
 | 0xC0   | 4      | LIT24    | T = a 24-bit signed constant (bytes 1 .. 3) |
 | 0xC1   | 4      | CBRL     | if the condition (byte 1 bits 7..4) holds: jump to the next instruction + a 20-bit signed offset |
 | 0xC2   | 4      | JSRL     | call, as JSRS, with a 24-bit signed offset |
@@ -190,6 +213,15 @@ CMP3 at most one operand (source) of PSP, RSP, FP, TMPL, TMPH, ST, HLIM.
 | 0xD5   | 4      | OR3      | dst = src1 \| src2, as ADD3; flags Z N V (V = bit 30), C unchanged |
 | 0xD6   | 4      | XOR3     | dst = src1 ^ src2, as ADD3; flags Z N V (V = bit 30), C unchanged |
 | 0xD7   | 4      | CMP3     | flags of src1 - src2 as SUB, and dst = those flags {V, N, Z, C} (bits 3..0, 0 above) |
+| 0xD8   | 4      | LSL3     | dst = src1 << src2[4:0] (byte 1 dst, byte 2 src1, byte 3 src2: r0 .. r31, T, S, R, L); flags as LSLI |
+| 0xD9   | 4      | LSR3     | dst = src1 >> src2[4:0], 0s in |
+| 0xDA   | 4      | ASR3     | dst = src1 >> src2[4:0], the sign kept |
+| 0xDB   | 4      | ROL3     | dst = src1 rotated left by src2[4:0] |
+| 0xDC   | 4      | ROR3     | dst = src1 rotated right by src2[4:0] |
+| 0xE0   | 4      | MIN3     | dst = the smaller of src1, src2 (signed); flags Z N |
+| 0xE1   | 4      | MAX3     | dst = the larger of src1, src2 (signed); flags Z N |
+| 0xE2   | 4      | MINU3    | dst = the smaller of src1, src2 (unsigned); flags Z N |
+| 0xE3   | 4      | MAXU3    | dst = the larger of src1, src2 (unsigned); flags Z N |
 
 ### DUP (0x02)
 
@@ -1498,6 +1530,10 @@ bits are the select signal of the module that holds it:
 | 01010     | ST       | stage 3, the flags (`flags.v`) | the status register: bits 3..0 = V N Z C |
 | 01011     | HLIM     | stage 3, `execute.v`          | the heap limit of CONS (see LISP) |
 | 01100     | VEC      | stage 3, `execute.v`          | the vector table (see Interrupts and exceptions); bits 9..0 are 0 |
+| 01101     | PSPL     | stage 3, `execute.v`          | the lowest PSP may take; bit 0 = its check on (see The stack limits) |
+| 01110     | PSPH     | stage 3, `execute.v`          | the highest PSP may take; bit 0 = its check on |
+| 01111     | RSPL     | stage 3, `execute.v`          | the lowest RSP may take; bit 0 = its check on |
+| 10000     | RSPH     | stage 3, `execute.v`          | the highest RSP may take; bit 0 = its check on |
 | others    | (free)   |                               | |
 
 So the full byte 1 of `MOVR T, PSP` is 0110 0100 = 0x64, of `MOVR PSP, T` 0010 0100
@@ -1513,7 +1549,7 @@ the destination through the result.
 | 3 execute       | `x_wen` = 1, `x_rd` = byte 1 bits 5..0, `x_result` = operand A | `x_wen` = 1, `x_rd` = T (`100000`), `x_result` = operand A |
 | 4, 5            | the write goes on and is done in writeback | the same |
 
-**Registers in stage 3** (PSP, RSP, FP, TMPL, TMPH, ST, HLIM): decode sends no value for them
+**Registers in stage 3** (PSP, RSP, FP, TMPL, TMPH, ST, HLIM, VEC, PSPL .. RSPH): decode sends no value for them
 (the register is not in the register file); stage 3 reads or writes it where it
 is. Their selector never goes to the register file.
 
@@ -2014,6 +2050,157 @@ jumps if T >= r5 (unsigned), `CBR LT` if T < r5 (signed). Decode as SUBR, with t
 write (and for PC the jump) left out: the ALU's `SUB` when T comes first, `RSB` when
 the register does.
 
+### SET, SETB (0x4B), SET2, SETB2 (0x8B)
+
+    SET, SETB   byte 0   0x4B
+                byte 1   bits 7..4: the condition (as CBR)
+                         bits 3..1: 000 (else the instruction does nothing)
+                         bit 0:     0 SET (true = -1), 1 SETB (true = 1)
+
+    SET2, SETB2 byte 0   0x8B
+                byte 1   bits 7..6: opx = 00
+                         bits 5..0: the register (r0 .. r31, T, S, R, L)
+                byte 2   as byte 1 of SET
+
+A condition as a value: the register is "true" if the condition holds, else 0. SET
+and SET2 give -1 (all bits 1: Forth's true), SETB and SETB2 give 1 (C's true). The
+conditions are those of the branches (EQ NE CS/HS CC/LO MI PL VS VC HI LS GE LT GT LE
+A TZ), on the flags as they are; TZ tests the register itself: T for SET, the
+register for SET2. No flags change, the stacks do not move.
+
+    CMP             ; ( a b ): the flags of a - b
+    NIP
+    SET     LT      ; T = -1 if a < b (signed), else 0: Forth's <  (with the NIP: ( a b -- f ))
+
+    SET     TZ      ; T = -1 if T = 0, else 0: Forth's 0=, one instruction
+    SETB2   r3, HS  ; r3 = 1 if the last compare was >= (unsigned), else 0: C's (a >= b)
+    SETB2   r4, TZ  ; r4 = 1 if r4 = 0, else 0: C's !x
+
+| stage           | what SET / SET2 does |
+|-----------------|----------------------|
+| 2 decode        | the true value (-1 or 1) on operand A, the register on B (for TZ); `d_cond` = the condition, `d_res` = SET (8) |
+| 3 execute       | `cond.v` works out the condition (as for a branch, no jump); `r` = A if it holds, else 0 |
+| 4, 5            | the write |
+
+### ADDI2, CMPI2 (0x8A)
+
+    byte 0   0x8A
+    byte 1   bit 7:     0 (else the instruction does nothing)
+             bit 6:     0 ADDI2, 1 CMPI2
+             bits 5..0: the register (r0 .. r31, T, S, R, L, or one of stage 3; not PC)
+    byte 2   a signed 8-bit constant k (-128 .. 127)
+
+    ADDI2 reg, k    ; reg = reg + k; flags C Z N V (as ADD)
+    CMPI2 reg, k    ; the flags of reg - k (as CMP); nothing written
+
+A register and a small constant, without loading the constant first. The register
+comes in on operand B, so it can be a register of stage 3 too:
+
+    ADDI2   r1, -5      ; r1 = r1 - 5
+    ADDI2   FP, -16     ; 4 words more below FP
+    CMPI2   r2, 10      ; then B LT: r2 < 10 (signed)
+    CMPI2   T, 0        ; T's flags (Z, N), C = 1
+
+The constant is in byte 2: it must be known when the source is assembled (no address).
+
+| stage           | what ADDI2 / CMPI2 does |
+|-----------------|-------------------------|
+| 2 decode        | k on operand A; the register on B (register file), or `d_b_s3` (stage 3); ALU `ADD` (ADDI2) or `RSB` (CMPI2: B - A); flags mask = 1111 |
+| 3 execute       | ADDI2: the result to the register (stage 3 through `rs`); CMPI2: flags only |
+
+### ABS, CLZ, PCNT (0x89)
+
+    byte 0   0x89
+    byte 1   bits 7..6: 00 ABS, 01 CLZ, 10 PCNT (11: the instruction does nothing)
+             bits 5..0: the destination (r0 .. r31, T, S, R, L)
+    byte 2   bits 5..0: the source (r0 .. r31, T, S, R, L)
+
+    ABS  dst, src   ; dst = |src|; flags Z N V: V = 1 for src = 0x8000_0000, which stays
+                    ; (-2^31 has no positive value); C unchanged
+    CLZ  dst, src   ; dst = the number of 0 bits above the highest 1 of src, 0 .. 32
+                    ; (32 for src = 0); flags Z N, C and V unchanged
+    PCNT dst, src   ; dst = the number of 1 bits in src, 0 .. 32; flags Z N
+
+The assembler takes one register for both (`CLZ r4` = `CLZ r4, r4`) and none for T
+(`ABS` = `ABS T, T`).
+
+    ABS                 ; Forth's ABS
+    CLZ     r1, r2      ; 31 - CLZ: the number of the highest 1 bit (log2)
+    PCNT    r3, r3      ; the bits that are set (e.g. in a bitmap of the GC)
+
+| stage           | what they do |
+|-----------------|--------------|
+| 2 decode        | the source on operand A; ALU `ABS`, `CLZ` or `PCNT` (alu.v); flags mask 1110 (ABS) or 0110 |
+| 3 execute       | the long part of the ALU (`y`), into the destination |
+
+### LSL2 .. ROR2 (0x98 .. 0x9C), LSL3 .. ROR3 (0xD8 .. 0xDC)
+
+    byte 0   0x98 LSL2, 0x99 LSR2, 0x9A ASR2, 0x9B ROL2, 0x9C ROR2
+    byte 1   bits 7..6: opx = 00
+             bits 5..0: the destination, also the value
+    byte 2   bits 5..0: the count's register
+
+    byte 0   0xD8 LSL3, 0xD9 LSR3, 0xDA ASR3, 0xDB ROL3, 0xDC ROR3
+    byte 1   bits 7..6: opx = 00
+             bits 5..0: the destination
+    byte 2   bits 5..0: the value's register
+    byte 3   bits 5..0: the count's register
+
+The shifts of LSLI .. RORI with the count in a register: its low 5 bits (0 .. 31),
+the bits above are ignored. All registers are r0 .. r31, T, S, R, L. The flags are
+those of LSLI .. RORI: C the last bit shifted out (unchanged when the count is 0), Z
+and N of the result, V of LSL as LSLI (the others 0).
+
+    LSL2 dst, cnt         ; dst = dst << cnt[4:0]
+    LSR3 dst, src, cnt    ; dst = src >> cnt[4:0]
+
+    LSL3    T, S, T       ; Forth's LSHIFT ( x u -- x' ) with a NIP after it
+    LSR3    T, S, T       ; RSHIFT
+    ASR2    r1, r2        ; C's r1 >>= r2 (int)
+
+| stage           | what they do |
+|-----------------|--------------|
+| 2 decode        | the value on operand A, the count on B; ALU `LSL` .. `ROR` (the shifter takes B[4:0], as for SHI); flags mask 1111 |
+| 3 execute       | the shifter's result into the destination |
+
+### MIN2 .. MAXU2 (0xA0 .. 0xA3), MIN3 .. MAXU3 (0xE0 .. 0xE3)
+
+    byte 0   0xA0 MIN2, 0xA1 MAX2, 0xA2 MINU2, 0xA3 MAXU2
+    byte 1   bits 7..6: opx = 00
+             bits 5..0: the destination, also the first value
+    byte 2   bits 5..0: the second value
+
+    byte 0   0xE0 MIN3, 0xE1 MAX3, 0xE2 MINU3, 0xE3 MAXU3
+    byte 1   bits 7..6: opx = 00
+             bits 5..0: the destination
+    byte 2, 3  bits 5..0: the two values
+
+The smaller or larger of two registers, signed (MIN, MAX) or unsigned (MINU, MAXU).
+All registers are r0 .. r31, T, S, R, L. Flags: Z and N of the result; C and V
+unchanged.
+
+    MIN2  dst, src        ; dst = min(dst, src), signed
+    MAXU3 dst, a, b       ; dst = max(a, b), unsigned
+
+    MIN3    T, S, T       ; Forth's MIN ( a b -- m ) with a NIP after it
+    MAX3    T, S, T       ; MAX
+    MAXU2   r1, r2        ; then MINU2 r1, r3: r1 clamped to r2 .. r3 (unsigned)
+
+The ALU compares with its adder (a - b: the borrow for unsigned, N != V for signed)
+and picks one of the two; on a tie the first.
+
+| stage           | what they do |
+|-----------------|--------------|
+| 2 decode        | the first value on operand A, the second on B; ALU `MIN`, `MAX`, `MINU`, `MAXU`; flags mask 0110 |
+| 3 execute       | the picked value into the destination |
+
+**Why only r0 .. r31, T, S, R, L** for the register shifts, MIN .. MAXU, ABS, CLZ,
+PCNT and SET2: their results come from the long part of the ALU (`y`), which does not
+reach the registers of stage 3 (timing, see cpu.md), and the shifter takes its count
+from operand B as it comes from the register file, not from stage 3. The assembler
+gives an error for any other register; in the processor such an instruction does
+nothing.
+
 ## Interrupts and exceptions
 
 ### The vector table and VEC
@@ -2037,7 +2224,12 @@ The numbers:
 | 1       | exception: an undefined opcode |
 | 2, 3    | free for exceptions |
 | 4       | exception: CONS, the heap is full (L > HLIM) |
-| 5 .. 15 | free for exceptions |
+| 5 .. 7  | free for exceptions |
+| 8       | exception: PSP overflow (a push below PSPL) |
+| 9       | exception: PSP underflow (a pop above PSPH) |
+| 10      | exception: RSP overflow (a push or ENTER below RSPL) |
+| 11      | exception: RSP underflow (a pop or LEAVE above RSPH) |
+| 12 .. 15| free for exceptions |
 | 16 .. 23| interrupts from devices: 16 + the line of the interrupt controller (`irqc.v`; in the computer: 16 the display's line interrupt, 17 its frame interrupt, 18 the sound, 19 the serial port) |
 | 24 .. 47| free for more lines |
 | 48 .. 255 | free: system calls (INTR n from a program) |
@@ -2105,6 +2297,9 @@ The processor raises exceptions itself, in the same way:
   of CONS) and sends fetch back to the CONS with the exception; fetch hands decode
   `EXC 4` there, as for an undefined opcode. R = the address of the CONS, which runs
   again after the RET. See LISP.
+- **A stack limit** (exceptions 8 .. 11): a push, pop, ENTER or LEAVE that would take
+  PSP or RSP past its limit. Execute finds it before the instruction changes anything
+  and sends fetch back to it, as for CONS. See The stack limits.
 
 So the processor raises an exception in one way, wherever it finds it: a redirect
 back to the failing instruction with the exception's number (`redirect_exc`,
@@ -2122,6 +2317,122 @@ CLI: I = 0. SEI: I = 1. RTI: RET (PC = R, pop the return stack into R), and I = 
 A device can only interrupt after the instruction that sets I = 1; an INTR already on
 its way when CLI takes effect is turned down in execute, so nothing between CLI and
 SEI is interrupted.
+
+A routine that does not know whether its caller has interrupts on uses PUSHF, CLI ..
+POPF instead of CLI .. SEI: POPF gives I back as it was, so critical sections nest.
+
+### PUSHF (0x38), POPF (0x39)
+
+    byte 0   0x38 / 0x39     no operands
+
+The whole of ST, the flags and I, onto the return stack and back, as PUSHS / POPS do
+with S (the top of the return stack is R):
+
+    PUSHF   push R onto the return stack, R = ST    (bits 3..0 V N Z C, bit 4 I, 0 above)
+    POPF    ST = R: the flags = R[3:0], I = R[4];   pop the return stack into R
+
+POPF is the one instruction besides CLI, SEI and RTI that changes I; MOVR ST, T and
+the other writes of ST leave it as it is. Like CLI it keeps fetch from injecting an
+interrupt while it is in execute (`ie_off`), so a POPF that clears I is never
+interrupted after it.
+
+    critical:
+            PUSHF               ; save the flags and I
+            CLI
+            ...                 ; nothing interrupts this
+            POPF                ; I as it was: 1 only if it was 1 before
+
+Both are checked against the stack limits of RSP (an overflow / underflow raises
+exception 10 / 11).
+
+| stage           | PUSHF | POPF |
+|-----------------|-------|------|
+| 2 decode        | R on port A, the push of RSP (`d_wdata` = A); `d_s3` = 3 (ST), the result R = s3 | R on port A, the pop of RSP into R; `d_st_we`, `d_ie` = 11 |
+| 3 execute       | stores R, R = {I, V N Z C} | flags = A[3:0], I = A[4] (`rs`) |
+| 4, 5            | the store; the write of R | the load into R |
+
+### WAIT (0x37)
+
+    byte 0   0x37
+
+Waits until a device asks for an interrupt, then goes on with the next instruction.
+
+- **I = 1**: the interrupt is taken right after the WAIT: the handler runs, and its
+  RTI comes back to the instruction after the WAIT.
+- **I = 0**: the WAIT ends all the same, but nothing is taken; the interrupt waits
+  for SEI (or POPF, RTI). So a program can check and sleep without a race:
+
+        idle:   CLI
+                ...                 ; anything to do? then do it, B A, idle
+                WAIT                ; nothing: wait (an interrupt that came after
+                SEI                 ;  the check ends the WAIT at once); its handler
+                B       A, idle     ;  runs here
+
+"Asks" is the interrupt controller's request (`irq`): a line that asks, whose bit in
+MASK is 1 and that is of a higher priority than every line in service. Execute holds
+the WAIT (stage 4 gets bubbles, nothing behind it moves) until irq is 1, a tick
+later; then the WAIT is a jump to the next instruction, so fetch starts again there
+and injects the interrupt before it (with I = 1). A WAIT costs 2 ticks when a device
+already asks.
+
+| stage           | what WAIT does |
+|-----------------|----------------|
+| 2 decode        | the next address on operand A, a jump (always) to it; `d_wait` |
+| 3 execute       | held while irq (through a register) is 0: `forward` holds stage 3 as for a load-use wait; then the jump |
+| 4, 5            | nothing |
+
+### The stack limits
+
+Four registers of stage 3 hold the limits of the two stacks. Each is the lowest or
+highest value its pointer may take; bit 0 turns its check on (the pointers are word
+aligned, so bits 1..0 are not part of a limit):
+
+| register | selector | the check (bit 0 = 1) | exception |
+|----------|----------|-----------------------|-----------|
+| PSPL     | 0x2D     | a push of PSP below PSPL: overflow  | 8  |
+| PSPH     | 0x2E     | a pop of PSP above PSPH: underflow  | 9  |
+| RSPL     | 0x2F     | a push of RSP (or ENTER) below RSPL: overflow | 10 |
+| RSPH     | 0x30     | a pop of RSP (or LEAVE) above RSPH: underflow | 11 |
+
+Reset clears all four: no checks. A program sets them with MOVR, MOV2, MOVI2, ADDI2,
+... like any register of stage 3 (`MOVR PSPL, T`), and reads them back the same way.
+
+A stack grows down: a push stores at the pointer and then takes 4 off it, a pop adds
+4 and then loads. For a stack in the words from A up to B - 4, the pointer starts
+at B - 4 (empty) and is never below A - 4 (full):
+
+    PSPH = (B - 4) | 1          ; the highest PSP: the stack is empty
+    PSPL = (A - 4) | 1          ; the lowest PSP: the stack is full
+
+The check is made on the pointer as it is before the instruction:
+
+| instruction | fails when | |
+|-------------|-----------|-|
+| a push (DUP, OVER, DIP, TUCK, PUSH, PUSHS, PUSHF, the calls) | ptr - 4 < LO | ptr[31:2] <= LO[31:2] |
+| a pop (DROP, NIP, DRIP, ROT, DROT, ADD .. XOR, TADD, TSUB, CONS, POP, POPS, POPF, RET, RTI, UNEXT / NEXT R at the end of the loop) | ptr + 4 > HI | ptr[31:2] >= HI[31:2] |
+| ENTER n | RSP - 4 - 4n < RSPL (or below 0) | |
+| LEAVE | FP + 4 > RSPH | FP[31:2] >= RSPH[31:2] |
+
+When the check fails, the instruction does **nothing at all** (no store, no load, no
+register, flag or pointer changes) and the processor raises the exception there, as
+CONS does: R = the address of the instruction, and a RET from the handler runs it
+again. So a handler can grow the stack (move the limit, or the stack) and return, or
+report the error and go elsewhere.
+
+    povf:   ...                 ; exception 8: the parameter stack is full
+            MOVI2   PSPL, 0     ; e.g.: the check off (or a lower limit)
+            RET                 ; the instruction runs again
+
+**INTR and EXC are never checked**, so a handler can always be entered (keep a few
+words free below RSPL for that). ROT and DROT are checked at their first step (a pop),
+CONS at its first step for the pop of its last one: none is stopped halfway. MOVR,
+INCR, ADDI2, ... that write PSP or RSP directly are not checked either: that is how a
+program switches stacks.
+
+| stage           | what the check does |
+|-----------------|---------------------|
+| 2 decode        | `d_chk` bit 0 with each push and pop (not INTR, EXC, the second step of ROT / DROT); bit 1 for CONS's first step (its pop of PSP); ENTER puts 4n on `d_imm` |
+| 3 execute       | compares PSP, RSP, FP and RSP - 4n with the limits; on a failure `act` = 0 (nothing is written or stored) and a redirect back to the instruction (`d_pc`) with the exception: fetch injects `EXC n` there |
 
 ### The interrupt controller: priorities and nesting
 
@@ -2171,6 +2482,15 @@ CMP and its CBR:
             POP
             MOVR    ST, T       ; the flags back (I stays 0)
             DROP
+            RTI                 ; back, I = 1
+
+Or with PUSHF and POPF, which keep the flags (and I) on the return stack and leave T
+and S alone:
+
+    dev:    PUSHF               ; push R, R = ST: the flags, I = 0
+            ...                 ; serve the device
+            STR3    rX, rC, 12  ; EOI
+            POPF                ; the flags back, I = 0 (as PUSHF found it)
             RTI                 ; back, I = 1
 
 TMP needs no saving: nothing comes between the steps of ROT, DROT and CONS. TMPL and
@@ -2400,9 +2720,19 @@ Forth words made of several opcodes. The return stack ends as it started.
 | >R   | ( a -- )  R: ( -- a ) | PUSH DROP |
 | R>   | ( -- a )  R: ( a -- ) | DUP POP |
 | n    | ( -- n )              | DUP LIT8 / LIT16 / LIT24 n |
-
 | (funcall) | ( f -- f )  R: ( -- ret ) | PUSH EXEC (a call to the address in T) |
 | FOR .. NEXT | ( n -- )  the body n + 1 times | PUSH DROP ... NEXT R, body (the body in one line: ... UNEXT body) |
+| =    | ( a b -- f )          | CMP NIP SET EQ |
+| <    | ( a b -- f )          | CMP NIP SET LT |
+| U<   | ( a b -- f )          | CMP NIP SET LO |
+| 0=   | ( a -- f )            | SET TZ |
+| 0<   | ( a -- f )            | CMPI2 T, 0 SET MI (or ASRI 31) |
+| ABS  | ( a -- u )            | ABS |
+| MIN  | ( a b -- m )          | MIN3 T, S, T NIP |
+| MAX  | ( a b -- m )          | MAX3 T, S, T NIP |
+| LSHIFT | ( x u -- x' )       | LSL3 T, S, T NIP |
+| RSHIFT | ( x u -- x' )       | LSR3 T, S, T NIP |
+| 1+ .. n+ | ( a -- a+n )      | ADDI2 T, n (n = -128 .. 127) |
 
 ROT and -ROT are single opcodes now (ROT, DROT). Without them they would take 4
 opcodes, the shortest possible with the others: `PUSH DRIP DUP POPS` and
