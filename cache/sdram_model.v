@@ -76,10 +76,13 @@ module sdram_model #(
         max2 = (a > c) ? a : c;
     endfunction
 
+    // quiet = 1: a complaint is counted, but not shown (a test bench that expects some,
+    // e.g. the missed refreshes while the computer is held in reset, sets it then)
+    reg quiet = 1'b0;
     task fail(input [8*64-1:0] what);
         begin
             errors = errors + 1;
-            if (errors <= 20) $display("%t SDRAM MODEL: %0s", $realtime, what);
+            if (errors <= 20 && !quiet) $display("%t SDRAM MODEL: %0s", $realtime, what);
         end
     endtask
 

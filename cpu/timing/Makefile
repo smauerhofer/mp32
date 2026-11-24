@@ -8,6 +8,12 @@
 #   make clean      throw away what the build made
 #
 # A seed takes a few minutes. The reports are build/pnr_<seed>.log.
+#
+# nextpnr ends with an error when it finds hold (minimum) time violations; here they
+# are all on the code RAM of core.v (its address register right next to the RAM, a
+# test set-up the computer does not have: its board has none). So the recipes take
+# nextpnr's exit status as it is (|| true), and the summary shows the frequency after
+# routing and the number of hold violations of each seed.
 
 BUILD  ?= build
 DEVICE  = GW2AR-LV18QN88C8/I7
@@ -36,13 +42,13 @@ $(BUILD)/core.json: core.v $(CORE) lisp_lines.hex
 
 # place and route, one seed each; the line nextpnr ends with is the frequency
 $(BUILD)/pnr_%.log: $(BUILD)/core.json core.cst
-	-nextpnr-himbaechel --json $< --write $(BUILD)/core_pnr_$*.json --device $(DEVICE) \
+	nextpnr-himbaechel --json $< --write $(BUILD)/core_pnr_$*.json --device $(DEVICE) \
 		--vopt family=$(FAMILY) --vopt cst=core.cst --freq $(FREQ) --seed $* \
-		> $@ 2>&1
+		> $@ 2>&1 || true
 
 timing: $(addprefix $(BUILD)/pnr_,$(addsuffix .log,$(SEEDS)))
 	@for s in $(SEEDS); do \
-		echo "seed $$s: $$(grep -E 'Max frequency for clock' $(BUILD)/pnr_$$s.log | tail -1)"; \
+		echo "seed $$s: $$(grep -E 'Max frequency for clock' $(BUILD)/pnr_$$s.log | tail -1 | sed 's/^Info: *//'), $$(grep -oE '[0-9]+ Hold/min time violations' $(BUILD)/pnr_$$s.log | tail -1 | cut -d' ' -f1 | grep . || echo 0) hold violations"; \
 	done
 
 # the CPU before the LISP opcodes: its decode, sequencer, execute and ALU from old/
@@ -55,13 +61,13 @@ $(BUILD)/core_old.json: old/core_old.v $(OLD) lisp_lines.hex
 		chparam -set CODE \"lisp_lines.hex\" top; synth_gowin -top top -json $@"
 
 $(BUILD)/pnr_old_%.log: $(BUILD)/core_old.json core.cst
-	-nextpnr-himbaechel --json $< --write $(BUILD)/core_old_pnr_$*.json --device $(DEVICE) \
+	nextpnr-himbaechel --json $< --write $(BUILD)/core_old_pnr_$*.json --device $(DEVICE) \
 		--vopt family=$(FAMILY) --vopt cst=core.cst --freq $(FREQ) --seed $* \
-		> $@ 2>&1
+		> $@ 2>&1 || true
 
 timing-old: $(addprefix $(BUILD)/pnr_old_,$(addsuffix .log,$(SEEDS)))
 	@for s in $(SEEDS); do \
-		echo "old, seed $$s: $$(grep -E 'Max frequency for clock' $(BUILD)/pnr_old_$$s.log | tail -1)"; \
+		echo "old, seed $$s: $$(grep -E 'Max frequency for clock' $(BUILD)/pnr_old_$$s.log | tail -1 | sed 's/^Info: *//'), $$(grep -oE '[0-9]+ Hold/min time violations' $(BUILD)/pnr_old_$$s.log | tail -1 | cut -d' ' -f1 | grep . || echo 0) hold violations"; \
 	done
 
 size: $(BUILD)/core.json

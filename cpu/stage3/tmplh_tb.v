@@ -20,7 +20,7 @@ module tmplh_tb;
     reg clk = 0;
     always #18.5 clk = ~clk;
 
-    localparam [4:0] LSL64 = 5'd12, LSR64 = 5'd13, ASR64 = 5'd14, ROL64 = 5'd15, ROR64 = 5'd16,
+    localparam [5:0] LSL64 = 6'd12, LSR64 = 5'd13, ASR64 = 5'd14, ROL64 = 5'd15, ROR64 = 5'd16,
                      DIVS = 5'd18, MULS = 5'd25;
 
     reg         reset = 1, en = 0, we_l = 0, we_h = 0, use_alu = 0, sh_l = 0, sh_r = 0;
@@ -29,7 +29,7 @@ module tmplh_tb;
     wire [31:0] tmpl, tmph;
 
     // the ALU on {TMPH, TMPL}
-    reg  [4:0]  op = LSL64;
+    reg  [5:0]  op = LSL64;
     reg         c = 0;                    // the C flag
     reg         divide = 0;               // DIVS: a = T, b = S, cin = C
     reg  [31:0] t_reg = 0, s_reg = 0;     // T and S, for DIVS
@@ -60,7 +60,7 @@ module tmplh_tb;
     endtask
 
     // one 64-bit shift: TMPH:TMPL from the ALU, C from the ALU's carry
-    task shift64(input [4:0] o);
+    task shift64(input [5:0] o);
         begin
             op = o; use_alu = 1; en = 1; we_l = 1; we_h = 1; #1;
             @(posedge clk); c = fl[0]; #1;

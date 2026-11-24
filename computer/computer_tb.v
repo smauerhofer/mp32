@@ -236,6 +236,7 @@ module computer_tb;
         integer a;
         begin
             e0 = chip.errors;
+            chip.quiet = 1;                         // its complaints now are expected: counted, not shown
             reset = 1;
             repeat (8) @(posedge clk);
             for (a = 0; a < 16384; a = a + 4)       // no operating system left over
@@ -243,6 +244,7 @@ module computer_tb;
             reset = 0;
             #250_000;                               // the power-up: 200 us, 8 refreshes
             reset_errors = reset_errors + (chip.errors - e0);
+            chip.quiet = 0;
         end
     endtask
 

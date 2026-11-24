@@ -57,7 +57,7 @@ module execute_tb;
                K_KINDS = 41;
 
     // ALU ops (alu.v), stackregs ops and registers
-    localparam [4:0] A_ADD = 0, A_ADC = 1, A_SUB = 2, A_SBC = 3, A_AND = 4, A_OR = 5,
+    localparam [5:0] A_ADD = 0, A_ADC = 1, A_SUB = 2, A_SBC = 3, A_AND = 4, A_OR = 5,
                      A_XOR = 6, A_NOT = 7, A_LSL = 8, A_LSR = 9, A_ASR = 10, A_ROR = 11,
                      A_CSUB = 17, A_DIVS = 18, A_MUL = 19, A_SMUL = 20, A_ASL = 21,
                      A_ROL = 22, A_ROLC = 23, A_RORC = 24, A_MULS = 25;
@@ -320,7 +320,7 @@ module execute_tb;
     reg [31:0] rmem [0:255];
 
     // its ALU and conditions: separate instances, tested on their own
-    reg  [4:0]  ra_op;   reg [31:0] ra_a, ra_b;   reg ra_cin;
+    reg  [5:0]  ra_op;   reg [31:0] ra_a, ra_b;   reg ra_cin;
     wire [31:0] ra_y, ra_y2;   wire [3:0] ra_f;
     alu ref_alu (.op(ra_op), .a(ra_a), .b(ra_b), .bo(ra_b), .cin(ra_cin), .y(ra_y), .y2(ra_y2), .flags(ra_f));
     reg  [3:0]  rc_cond; reg rc_tz;  wire rc_take;
@@ -355,7 +355,7 @@ module execute_tb;
         end
     endtask
 
-    task alu_(input [4:0] op, input [31:0] a, input [31:0] b, input c, input [3:0] mask);
+    task alu_(input [5:0] op, input [31:0] a, input [31:0] b, input c, input [3:0] mask);
         begin
             ra_op = op; ra_a = a; ra_b = b; ra_cin = c; #1;
             r_fl = (r_fl & ~mask) | (ra_f & mask);
@@ -462,8 +462,8 @@ module execute_tb;
         end
     endfunction
 
-    reg [4:0] bin_ops [0:6];
-    reg [4:0] sh_ops  [0:7];
+    reg [5:0] bin_ops [0:6];
+    reg [5:0] sh_ops  [0:7];
     integer   k, i, kind;
     task add(input integer kd, input [31:0] n, input [5:0] g, input [3:0] c, input gap);
         begin
