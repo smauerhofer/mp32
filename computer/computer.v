@@ -3,11 +3,11 @@
 //
 //   ../cpu/cpu.v                 the processor (the five stages)
 //   ../cpu/stage4/memsys.v       the memory system: the bus, the block RAM with the
-//                                boot program, the cache, the SDRAM controller
+//                                boot loader, the cache, the SDRAM controller
 //   iodec.v                      the I/O decoder (the address map of the devices),
 //                                with the interrupt controller (../cpu/irqc.v)
 //   ../uart/uart.v               the serial port (to the PC, over the USB-C cable)
-//   ../sdcard/sdcard.v           the microSD card
+//   ../sdcard/sdcard.v           the microSD card, and (a second one) the SPI flash
 //   ../audio/audio.v             the sound: I2S to the board's MAX98357A
 //   ../display2/video.v          the picture: text and graphics from the SDRAM
 //   raster.v, tmds.v             the raster and the HDMI encoders (the book's)
@@ -45,6 +45,10 @@ module computer #(
     output wire        sd_mosi,
     input  wire        sd_miso,
     output wire        sd_cs_n,
+    output wire        flash_clk,       // the SPI flash (the one with the bitstream)
+    output wire        flash_mosi,
+    input  wire        flash_miso,
+    output wire        flash_cs_n,
     output wire        hp_bck,          // the sound: I2S to the MAX98357A
     output wire        hp_ws,
     output wire        hp_din,
@@ -120,12 +124,13 @@ module computer #(
 
     // ================================================================ the I/O devices
     wire        uart_sel, uart_ready, sd_sel, sd_ready, vid_sel, vid_ready;
+    wire        flash_sel, flash_ready;
     wire        audio_sel, audio_ready;
     wire [12:0] audio_addr;
     wire        uart_irq;           // the serial port: a byte came, or room to send
     wire        audio_irq;          // the sound: the queue half empty, or a bank played
     wire        line_irq, frame_irq;    // the display: a line, the vertical blank
-    wire [31:0] uart_rdata, sd_rdata, vid_rdata, audio_rdata;
+    wire [31:0] uart_rdata, sd_rdata, flash_rdata, vid_rdata, audio_rdata;
     wire [17:0] vid_addr;
 
     iodec io (
@@ -134,6 +139,7 @@ module computer #(
         .io_wdata(io_wdata), .io_rdata(io_rdata), .io_ready(io_ready),
         .uart_sel(uart_sel), .uart_rdata(uart_rdata), .uart_ready(uart_ready),
         .sd_sel(sd_sel), .sd_rdata(sd_rdata), .sd_ready(sd_ready),
+        .flash_sel(flash_sel), .flash_rdata(flash_rdata), .flash_ready(flash_ready),
         .audio_sel(audio_sel), .audio_addr(audio_addr), .audio_rdata(audio_rdata), .audio_ready(audio_ready),
         .vid_sel(vid_sel), .vid_addr(vid_addr), .vid_rdata(vid_rdata), .vid_ready(vid_ready),
         .leds(leds), .buttons(buttons),
@@ -154,6 +160,15 @@ module computer #(
         .io_sel(sd_sel), .io_we(io_we), .io_be(io_be), .io_addr(io_addr[3:2]),
         .io_wdata(io_wdata), .io_rdata(sd_rdata), .io_ready(sd_ready),
         .sd_clk(sd_clk), .sd_mosi(sd_mosi), .sd_miso(sd_miso), .sd_cs_n(sd_cs_n)
+    );
+
+    // The SPI flash: the same SPI master as the card, at 21 MHz from the start (DIV 0;
+    // its READ, 0x03, goes up to 50 MHz).
+    sdcard #(.DIV_INIT(8'd0)) flash (
+        .clk(clk), .reset(reset),
+        .io_sel(flash_sel), .io_we(io_we), .io_be(io_be), .io_addr(io_addr[3:2]),
+        .io_wdata(io_wdata), .io_rdata(flash_rdata), .io_ready(flash_ready),
+        .sd_clk(flash_clk), .sd_mosi(flash_mosi), .sd_miso(flash_miso), .sd_cs_n(flash_cs_n)
     );
 
     audio #(.DIV_INIT(AUDIO_DIV)) sound (

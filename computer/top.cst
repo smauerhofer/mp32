@@ -2,6 +2,8 @@
 //
 // The board's clock, buttons, serial port, LEDs and HDMI: board.cst of chapter 23 of
 // 6502-gate-by-gate (without the keyboard's pin). The microSD card: ../sdcard/sdcard.cst.
+// The SPI flash: MSPI_CLK 59, MSPI_CS 60, MSPI_DI 61, MSPI_DO 62 of the board's
+// schematic (as in github.com/calint/tang-nano-20k--riscv--cache-sdram).
 // The sound (the MAX98357A): Sipeed's TangNano-20K-example, audio/src/audio.cst.
 // The SDRAM inside the GW2AR-18: its pins have no numbers on the package, only the
 // names of the I/O cells they are wired to (as in the constraints of
@@ -58,6 +60,17 @@ IO_LOC  "sd_miso" 84;
 IO_PORT "sd_miso" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 IO_LOC  "sd_cs_n" 81;
 IO_PORT "sd_cs_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+// ---- the SPI flash (the board's MSPI pins: the flash that holds the bitstream).
+// After configuration they are ours only with gowin_pack --mspi_as_gpio (Makefile).
+// Its WP (57) and HOLD (63) are left alone: pulled up on the board.
+IO_LOC  "flash_cs_n" 60;
+IO_PORT "flash_cs_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "flash_clk" 59;
+IO_PORT "flash_clk" IO_TYPE=LVCMOS33;
+IO_LOC  "flash_mosi" 61;
+IO_PORT "flash_mosi" IO_TYPE=LVCMOS33;
+IO_LOC  "flash_miso" 62;
+IO_PORT "flash_miso" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 // ---- the sound: I2S to the MAX98357A, and its amplifier on
 IO_LOC  "pa_en" 51;
 IO_PORT "pa_en" IO_TYPE=LVCMOS33 PULL_MODE=UP DRIVE=8;

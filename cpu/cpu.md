@@ -726,8 +726,8 @@ critical path is from TMPL / the stack pointers through the ALU's adder to
 - Prefetch the next line into a second buffer, so moving into the next line costs
   no fill.
 - Function of R beyond the return stack's top. (L is the allocation pointer of LISP.)
-- A garbage collector at VEC + 16 (0xF000_0010) in the boot program (it says "heap
-  full" and stops).
+- A garbage collector at VEC + 16 in the operating system (`computer/os.s`, VEC = 0
+  after the boot loader; it says "heap full" and stops).
 - 63 MHz: see Timing. It would need a deeper pipeline; the registered `mem_stall` (a
   tick per memory access) is not done.
 - `display2`: at 42 and 54 MHz (`make test-clocks`) the video test bench reports 78
@@ -745,8 +745,7 @@ critical path is from TMPL / the stack pointers through the ALU's adder to
   `make test` there runs it first in simulation).
 - The I/O devices on the I/O range (keyboard, mouse, video registers, ...), and an
   I/O decoder behind `io_*`.
-- The boot program for the block RAM (a `$readmemh` file for `BRAM_INIT`).
-- A handler for the sound in the boot program (vector 18; it needs samples to play).
+- A handler for the sound in the operating system (vector 18; it needs samples to play).
 - More exceptions: a misaligned or unmapped address (execute has the address before
   the access), divide by zero. A bus error in stage 4 would come too late to be
   precise (the instruction has already changed PSP / RSP in stage 3).

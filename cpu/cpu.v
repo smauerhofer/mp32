@@ -20,7 +20,7 @@
 // still wanted when the INTR gets there (stage3/execute.v). The registers T, S, R, L,
 // PSP, RSP, FP and the flags come out to be looked at (by a test bench, or LEDs).
 //
-// The parameters: RESET_PC, where it starts (the block RAM, with the boot program),
+// The parameters: RESET_PC, where it starts (the block RAM, with the boot loader),
 // and VEC_RESET, VEC after reset: the vector table (INTR 0, the reset, is its first
 // entry, so the two are the same). CONS traps to VEC + 16 (exception 4).
 

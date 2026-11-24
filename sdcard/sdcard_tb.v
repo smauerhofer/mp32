@@ -105,7 +105,7 @@ module sdcard_tb;
         end
     endtask
 
-    localparam DATA = 0, DATA32 = 1, CTRL = 2;
+    localparam DATA = 0, DATA32 = 1, CTRL = 2, DATA32LE = 3;
 
     // the answer the model gives to byte b, with prev the byte before it (or none)
     function [7:0] answer(input first, input [7:0] prev);
@@ -163,6 +163,23 @@ module sdcard_tb;
         end
     endtask
 
+    // the same, little-endian: the byte in bits 7..0 goes first and comes back there
+    task word_io_le(input [31:0] v);
+        begin
+            wr(DATA32LE, v);
+            rd(DATA32LE);
+            want[7:0]   = answer(first_byte, prev);
+            want[15:8]  = v[7:0]   + 1;
+            want[23:16] = v[15:8]  + 1;
+            want[31:24] = v[23:16] + 1;
+            check(r, want, "little-endian word answer");
+            for (k = 0; k < 4; k = k + 1) begin
+                sent[nsent] = v >> (8 * k); nsent = nsent + 1;
+            end
+            first_byte = 0; prev = v[31:24];
+        end
+    endtask
+
     initial begin
         repeat (3) @(posedge clk);
         reset <= 0;
@@ -191,6 +208,7 @@ module sdcard_tb;
         byte_io(8'h40); byte_io(8'h00); byte_io(8'h95); byte_io(8'hFF);
         word_io(32'hDEAD_BEEF);
         word_io(32'h0102_0304);
+        word_io_le(32'h0403_0201);
         byte_io(8'h77);
 
         // ---- a second write waits for the first; CTRL can be read meanwhile
@@ -222,8 +240,11 @@ module sdcard_tb;
                 d4 = $random(seed) & 3;
                 wr(CTRL, {16'd0, d4, 8'd1});
             end
-            if ($random(seed) & 1) byte_io($random(seed));
-            else                   word_io($random(seed));
+            case ($random(seed) & 3)
+                0, 1:    byte_io($random(seed));
+                2:       word_io($random(seed));
+                default: word_io_le($random(seed));
+            endcase
         end
 
         // ---- the card got exactly what was sent

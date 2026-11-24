@@ -1,18 +1,24 @@
 # The mp32 computer on the Tang Nano 20K
 
 The whole computer: the processor (`../cpu`), its memory (block RAM, cache, the 8 MB
-SDRAM inside the chip), a serial port, the microSD card, the sound (the board's
-MAX98357A and a speaker) and the picture (HDMI, 640 x 480), with a first boot program.
+SDRAM inside the chip), a serial port, the microSD card, the SPI flash, the sound (the
+board's MAX98357A and a speaker) and the picture (HDMI, 640 x 480), with a boot loader
+and a first operating system for it to load.
 
 ```
-make test       the boot program, then the whole computer in simulation
+make test       the boot loader and the operating system, then the whole computer in
+                simulation: it boots from the flash, the card and the serial port
 make board      build/top.fs for the board
 make flash      load it into the board (until power-off)
 make burn       write it into the board's flash
+make os         build/os.img, the operating system's image
+make os-burn    write build/os.img into the board's flash at $400000
+make os-send PORT=/dev/ttyS3
+                send build/os.img over the serial port (COM4 is /dev/ttyS3)
 ```
 
-Rename `Makefile.txt` to `Makefile` first. The assembler and linker come from
-`../toolchain/bin`.
+Rename `Makefile.txt` to `Makefile` first. The assembler, the linker and `mp32img`
+come from `../toolchain/bin`.
 
 ## What is where
 
@@ -22,9 +28,10 @@ Rename `Makefile.txt` to `Makefile` first. The assembler and linker come from
 | `pll.v` | 126 MHz (HDMI), 25.2 MHz (pixels), 42 MHz (processor; the rPLL's `CLKOUTD3`) |
 | `computer.v` | the computer: processor, memory system, I/O decoder, devices, picture |
 | `iodec.v` | the address map of the I/O devices, and the interrupt controller |
-| `boot.s`, `boot.cfg` | the boot program and its linker configuration |
+| `boot.s`, `boot.cfg` | the boot loader (in the block RAM) and its linker configuration |
+| `os.s`, `os.cfg` | a first operating system (in the SDRAM from 0) and its linker configuration |
 | `top.cst` | the pins |
-| `computer_tb.v` | the whole computer in simulation, with the SDRAM model |
+| `computer_tb.v` | the whole computer in simulation, with the models of the SDRAM, the flash (`flash_model.v`) and the card (`../sdcard/sd_model.v`) |
 | `raster.v`, `tmds.v`, `serializer.v` | copies of the book's (6502-gate-by-gate, chapter 23) |
 
 ## The address map
@@ -32,25 +39,98 @@ Rename `Makefile.txt` to `Makefile` first. The assembler and linker come from
 | address | what |
 |---|---|
 | `0000_0000 - 007F_FFFF` | SDRAM, 8 MB (through the cache; `0078_0000 - 007F_FFFF` write-through: the screen) |
+| `0000_0000 - 0000_03FF` | the operating system's vector table (VEC after the boot loader): entry n at 4n |
 | `0078_0000` | the screen's text: 60 rows of 80 words (code, font, paper, ink) |
 | `0079_0000` | the screen's pixels: 480 lines of 640 bytes |
-| `F000_0000 - F000_1FFF` | block RAM, 8 KB: the boot program (loaded with the FPGA) |
-| `F000_0000 - F000_00BF` | its vector table (VEC after reset): entry n at `F000_0000 + 4n` (0 reset, 1 undefined opcode, 4 heap full, 16 display line, 17 display frame, 18 sound, 19 serial port) |
+| `F000_0000 - F000_1FFF` | block RAM, 8 KB: the boot loader (loaded with the FPGA) |
+| `F000_0000 - F000_00BF` | its vector table (VEC after reset): entry n at `F000_0000 + 4n` (0 reset, 1 undefined opcode, the rest: "unexpected") |
 | `FFFF_0000` | serial port: +0 DATA, +4 STATUS, +8 DIV, +12 CTRL (`../uart/uart.v`) |
-| `FFFF_0100` | microSD: +0 DATA, +4 DATA32, +8 CTRL (`../sdcard/sdcard.v`) |
+| `FFFF_0100` | microSD: +0 DATA, +4 DATA32, +8 CTRL, +12 DATA32LE (`../sdcard/sdcard.v`) |
 | `FFFF_0200` | +0 LEDS (bits 5..0, 1 = lit), +4 BUTTONS (bit 0 S1, bit 1 S2), +8 TICKS |
 | `FFFF_0300` | sound: +0 DATA, +4 STATUS, +8 CTRL, +12 DIV, +16 TONE, +20 LEN, +24 BSTATUS, +28 BLEN, +32 READY (`../audio/audio.v`) |
 | `FFFF_0400` | interrupt controller: +0 PENDING (read), +4 MASK, +8 NUMBER (read), +12 ISR (read) / EOI (write) (`../cpu/irqc.v`) |
+| `FFFF_0500` | SPI flash: +0 DATA, +4 DATA32, +8 CTRL, +12 DATA32LE (`../sdcard/sdcard.v` again, 21 MHz) |
 | `FFFF_8000 - FFFF_9FFF` | the video unit's font RAM (4 fonts) |
 | `FFFF_A000 - FFFF_AFFF` | its registers: `A020` text_base, `A024` pixel_base, `A028` IRQ_LINE, `A02C` IRQ_CTRL, `A030` IRQ_STATUS, `A034` LINE, `A400 - A7FF` palette |
 | `FFFF_B000 - FFFF_BFFF` | its mode RAM (which blocks are graphics) |
 | `FFFF_C000 - FFFF_CFFF` | the sound's sample memory: bank 0 at `C000`, bank 1 at `C800`, 1024 samples each, two to a word (write only) |
 
-## The boot program
+## The boot loader
 
-Clears the screen (blue), writes `mp32 ready` on it and to the serial port, beeps
-(442 Hz, 0.1 s: a speaker on the board's 2-pin header), then echoes what comes in on the serial port (115,200 baud, 8N1) to both; the LEDs count
-the bytes. On the PC: any terminal on the board's COM port. Hold S1 to start again.
+`boot.s`, in the block RAM: the processor starts it after reset (and after S1). It
+loads the operating system into the SDRAM and starts it. It looks in three places, in
+this order, and takes the first good image:
+
+1. **the SPI flash**, at `$400000` (`FLASH_IMAGE`; the bitstream is at 0, 8 MB in all)
+2. **the microSD card**, from block 0 (`SD_LBA`): the raw card, no file system. SDHC,
+   SDXC and SDSC cards; it starts the card at 396 kHz, then reads at 21 MHz
+3. **the serial port**: it says `serial port: send the image` and waits as long as it
+   takes; whatever comes before the image's first word is skipped
+
+It says what it does on the serial port (115,200 baud) and on the screen, e.g.
+
+```
+mp32 boot
+flash: no image
+sd card: loading 00000660 bytes to 00000000 ok, start at 00000000
+```
+
+(and `bad header`, `bad checksum`, `read error`, `no card`; a dot for every 64 KB).
+The LEDs: 1 the flash, 2 the card, 4 the serial port; all six: it stopped.
+
+### The image
+
+`mp32img` (`../toolchain`) puts a header of 8 little-endian words in front of the
+program (the linker's raw `bin` output, see `os.cfg`):
+
+| offset | word |
+|---|---|
+| +0 | `mp32` (`$3233706D`) |
+| +4 | load: where the payload goes, 1 KB aligned (VEC = load) |
+| +8 | size: the payload's bytes, a multiple of 4, not 0 |
+| +12 | entry: where it starts (normally load: the reset entry of the vector table) |
+| +16 | sum: the payload's words added up |
+| +20, +24 | 0 |
+| +28 | check: makes the eight words add up to 0 |
+
+The loader checks the header (and that the payload ends below the screen, `$780000`,
+and that entry is in it), copies the payload, adds its words up and compares. A bad
+image is reported, and the next place is tried.
+
+### Putting the image there
+
+- **flash:** `make os-burn`, i.e. `openFPGALoader -b tangnano20k --external-flash -o
+  0x400000 --file-type bin build/os.img`. The bitstream (`make burn`) stays at 0. The
+  flash's pins (59 .. 62) belong to the FPGA only after configuration, and only with
+  `gowin_pack --mspi_as_gpio` (in the Makefile). With Gowin's programmer: External
+  Flash Mode, exFlash C Bin Erase, Program, address `0x400000`.
+- **card:** the image raw from block 0, e.g. as administrator in the MinGW shell
+  `dd if=build/os.img of=/dev/sdX` (find X with `cat /proc/partitions`; this
+  overwrites the card's partition table), or with a raw disk writer.
+- **serial port:** `make os-send PORT=/dev/ttyS3` (COM4), or from cmd: `mode COM4
+  BAUD=115200 PARITY=n DATA=8 STOP=1` and `copy /b build\os.img COM4`. 1 MB takes
+  about 90 s at 115,200 baud.
+
+### The handover
+
+With a good image the loader waits until the serial port has sent everything, then:
+VEC = load, r1 = where it came from (1 the flash, 2 the card, 3 the serial port), r2 =
+size, and it jumps to entry. I = 0, and no device has its interrupt on. The stacks
+(PSP, RSP) still point into the block RAM: the operating system sets up its own
+first. The loader does not clear the operating system's BSS. INTR 0 then starts the
+operating system again (its entry 0), not the loader; S1 starts the loader.
+
+Errors that should not happen in the loader (an undefined opcode, an exception, an
+interrupt) are caught by its own vector table: it says so and stops.
+
+## The operating system
+
+`os.s`, the demo that used to be the boot program, linked with `os.cfg` to run from
+0: its vector table first (256 entries), then the code. It clears the screen (blue),
+writes `mp32 ready` on it and to the serial port, beeps (442 Hz, 0.1 s: a speaker on
+the board's 2-pin header), then echoes what comes in on the serial port (115,200 baud,
+8N1) to both; the LEDs count the bytes. On the PC: any terminal on the board's COM
+port.
 
 It also sets up the LISP heap (L, HLIM: 1 MB to 7.5 MB of the SDRAM). Its vector table
 sends an undefined opcode, a full heap (there is no garbage collector yet) and any
@@ -105,9 +185,13 @@ line 2 of the interrupt controller: vector 18. All the registers are described i
 
 ## Not yet
 
-- a handler for the sound's interrupt in the boot program
+- a handler for the sound's interrupt in the operating system
 - the keyboard and the mouse
-- a garbage collector, a monitor, loading programs over the serial port or from the card
+- a garbage collector, a monitor
+- a file system on the card: the loader reads the raw card
+- the flash is only read: writing it (erase, page program) is up to a program
+- the flash's pins on the board: tried in simulation only. If the loader always says
+  `flash: no image` with an image at `$400000`, check `--mspi_as_gpio` and the pins
 - the SDRAM pins in `top.cst` are taken from another open-source project that uses
   the same chip (see the file); if the SDRAM does not answer on the board, they are
   the first thing to check

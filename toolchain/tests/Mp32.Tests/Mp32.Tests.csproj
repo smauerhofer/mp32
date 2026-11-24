@@ -18,5 +18,6 @@
     <ProjectReference Include="..\..\src\Mp32.Assembler\Mp32.Assembler.csproj" />
     <ProjectReference Include="..\..\src\Mp32.Librarian\Mp32.Librarian.csproj" />
     <ProjectReference Include="..\..\src\Mp32.Linker\Mp32.Linker.csproj" />
+    <ProjectReference Include="..\..\src\Mp32.Image\Mp32.Image.csproj" />
   </ItemGroup>
 </Project>

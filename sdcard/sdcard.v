@@ -6,6 +6,10 @@
 //   CMD0, CMD8, ACMD41, reading and writing 512-byte blocks, the CRCs - is up to the
 //   program, which keeps the hardware small and lets the protocol be fixed in software.
 //
+//   Nothing in it is particular to the card: it is a plain SPI master (mode 0). The
+//   computer uses it a second time for the board's SPI flash (../computer/computer.v,
+//   at 0xFFFF_0500, with the flash's pins).
+//
 // ---------------------------------------------------------------- the card's pins
 //   In SPI mode the card uses four of its six lines (Tang Nano 20K pins):
 //
@@ -17,7 +21,7 @@
 //   DAT1 (85) and DAT2 (80) are not used in SPI mode. See sdcard.cst.
 //
 // ---------------------------------------------------------------- the registers
-//   Three 32-bit registers, picked by io_addr[3:2] (the I/O decoder gives io_sel):
+//   Four 32-bit registers, picked by io_addr[3:2] (the I/O decoder gives io_sel):
 //
 //     +0  DATA    write: send the byte in bits 7..0
 //                 read:  the byte received during the last transfer (bits 7..0)
@@ -27,14 +31,19 @@
 //                 bits 15..8 DIV: SCLK = clk / (2 * (DIV + 1))
 //                 bit  16    BUSY (read only): a transfer is running
 //                 after reset: CS = 0, DIV = DIV_INIT
-//     +12         reads 0, writes ignored
+//     +12 DATA32LE as DATA32, the other way round (little-endian, as the processor
+//                 keeps words in memory):
+//                 write: send four bytes, bits 7..0 first
+//                 read:  the last four bytes received, the first one in bits 7..0
 //
-//   Every access to DATA and DATA32, and a write to CTRL, waits (io_ready stays 0) while
-//   a transfer runs. So a program never polls BUSY: it writes DATA and reads DATA, and
-//   the read comes back when the byte is in. Two writes in a row are fine too: the
-//   second waits for the first. A read of CTRL is answered at once.
+//   Every access to DATA, DATA32 and DATA32LE, and a write to CTRL, waits (io_ready
+//   stays 0) while a transfer runs. So a program never polls BUSY: it writes DATA and
+//   reads DATA, and the read comes back when the byte is in. Two writes in a row are
+//   fine too: the second waits for the first. A read of CTRL is answered at once.
 //
-//   Reading a block of 512 bytes is 128 times "write DATA32 0xFFFFFFFF, read DATA32".
+//   Reading a block of 512 bytes is 128 times "write DATA32 0xFFFFFFFF, read DATA32";
+//   with DATA32LE each word read can be stored as it is: the bytes land in memory in
+//   the order they came.
 //
 // ---------------------------------------------------------------- the clock
 //   The card must be started at 100 to 400 kHz; afterwards up to 25 MHz. At 42 MHz
@@ -75,7 +84,7 @@ module sdcard #(
     input  wire        sd_miso,
     output wire        sd_cs_n
 );
-    localparam R_DATA = 2'd0, R_DATA32 = 2'd1, R_CTRL = 2'd2;
+    localparam R_DATA = 2'd0, R_DATA32 = 2'd1, R_CTRL = 2'd2, R_DATA32LE = 2'd3;
 
     // ================================================================ the registers
     reg        cs;
@@ -96,7 +105,7 @@ module sdcard #(
     wire waits  = busy & ~(io_addr == R_CTRL & ~io_we);
     // The tick that ends an access: here a write takes effect.
     wire commit = io_sel & io_ready;
-    wire start  = commit & io_we & (io_addr == R_DATA | io_addr == R_DATA32);
+    wire start  = commit & io_we & (io_addr != R_CTRL);
 
     always @(posedge clk) begin
         if (reset) begin
@@ -108,7 +117,7 @@ module sdcard #(
                 R_DATA:   io_rdata <= {24'd0, rx[7:0]};
                 R_DATA32: io_rdata <= rx;
                 R_CTRL:   io_rdata <= {15'd0, busy, div, 7'd0, cs};
-                default:  io_rdata <= 32'd0;
+                default:  io_rdata <= {rx[7:0], rx[15:8], rx[23:16], rx[31:24]};
             endcase
         end
     end
@@ -141,9 +150,12 @@ module sdcard #(
             if (io_addr == R_DATA) begin
                 bits <= 6'd8;
                 tx   <= {io_wdata[7:0], 24'hFF_FFFF};
-            end else begin
+            end else if (io_addr == R_DATA32) begin
                 bits <= 6'd32;
                 tx   <= io_wdata;
+            end else begin                         // DATA32LE: bits 7..0 first
+                bits <= 6'd32;
+                tx   <= {io_wdata[7:0], io_wdata[15:8], io_wdata[23:16], io_wdata[31:24]};
             end
         end else if (busy) begin
             if (count != div)

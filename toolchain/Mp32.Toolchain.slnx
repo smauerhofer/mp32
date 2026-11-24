@@ -9,6 +9,7 @@
     <Project Path="src/Mp32.Assembler/Mp32.Assembler.csproj" />
     <Project Path="src/Mp32.Librarian/Mp32.Librarian.csproj" />
     <Project Path="src/Mp32.Linker/Mp32.Linker.csproj" />
+    <Project Path="src/Mp32.Image/Mp32.Image.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Mp32.Tests/Mp32.Tests.csproj" />

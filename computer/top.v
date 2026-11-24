@@ -11,6 +11,8 @@
 //   USB-C          the serial port to the PC (the BL616), 115,200 baud 8N1
 //   HDMI           640 x 480 at 60 Hz
 //   microSD        in SPI mode
+//   SPI flash      the 8 MB flash that holds the bitstream; read by the boot loader
+//                  (pins 59 .. 62; gowin_pack --mspi_as_gpio makes them ours)
 //   speaker        the MAX98357A (I2S), a 4 or 8 ohm speaker on the 2-pin header
 //   SDRAM          the 8 MB inside the chip
 //
@@ -29,6 +31,10 @@ module top #(
     output wire        sd_mosi,
     input  wire        sd_miso,
     output wire        sd_cs_n,
+    output wire        flash_clk,
+    output wire        flash_mosi,
+    input  wire        flash_miso,
+    output wire        flash_cs_n,
     output wire        hp_bck,
     output wire        hp_ws,
     output wire        hp_din,
@@ -82,6 +88,8 @@ module top #(
         .buttons({s2[1], s1[1]}), .leds(leds),
         .uart_rx(rx[1]), .uart_tx(uart_tx),
         .sd_clk(sd_clk), .sd_mosi(sd_mosi), .sd_miso(sd_miso), .sd_cs_n(sd_cs_n),
+        .flash_clk(flash_clk), .flash_mosi(flash_mosi), .flash_miso(flash_miso),
+        .flash_cs_n(flash_cs_n),
         .hp_bck(hp_bck), .hp_ws(hp_ws), .hp_din(hp_din), .pa_en(pa_en),
         .tmds_blue(blue_code), .tmds_green(green_code), .tmds_red(red_code),
         .O_sdram_clk(O_sdram_clk), .O_sdram_cke(O_sdram_cke), .O_sdram_cs_n(O_sdram_cs_n),

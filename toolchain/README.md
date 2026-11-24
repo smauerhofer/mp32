@@ -1,6 +1,6 @@
 # mp32 toolchain
 
-An assembler, a librarian and a linker for the mp32 processor, written in C#
+An assembler, a librarian, a linker and a boot image maker for the mp32 processor, written in C#
 (.NET 10, Visual Studio 2026). The instruction set they know is the one in
 `cpu/isa.md`.
 
@@ -9,8 +9,9 @@ An assembler, a librarian and a linker for the mp32 processor, written in C#
 | `mp32as` | `src/Mp32.Assembler` | assembles a source file (`.s`) into an object module (`.o`) |
 | `mp32ar` | `src/Mp32.Librarian` | collects object modules into a library (`.lib`) |
 | `mp32ld` | `src/Mp32.Linker`    | links object modules and libraries into a memory image, e.g. the `$readmemh` file for the block RAM |
-|          | `src/Mp32.Core`      | shared: the instruction set table, the relocations, the object and library formats |
-|          | `tests/Mp32.Tests`   | xUnit tests of all three |
+| `mp32img` | `src/Mp32.Image`    | puts the header in front of a program the boot loader loads (`computer/boot.s`) |
+|          | `src/Mp32.Core`      | shared: the instruction set table, the relocations, the object and library formats, the boot image |
+|          | `tests/Mp32.Tests`   | xUnit tests of all four |
 
 The flow is the same as with cc65's `ca65`, `ar65` and `ld65` in the 6502 book:
 
@@ -31,7 +32,7 @@ From the MinGW shell (rename `Makefile.txt` to `Makefile` first):
 
     make build      # dotnet build
     make test       # dotnet test
-    make publish    # mp32as.exe, mp32ar.exe, mp32ld.exe into bin/
+    make publish    # mp32as.exe, mp32ar.exe, mp32ld.exe, mp32img.exe into bin/
     make example    # publish, then build examples/hello
 
 ## The assembler: mp32as
@@ -221,6 +222,34 @@ address), `define = yes` (defines `__NAME_START__`, `__NAME_SIZE__` and
 
 The map file (`-m`) shows the memory areas, the segments, where each module went
 and every global symbol by name and by address.
+
+## The boot image maker: mp32img
+
+    mp32img [-o file.img] [--load addr] [--entry addr] payload.bin
+    mp32img --info file.img
+
+The boot loader in the block RAM (`computer/boot.s`) loads an operating system from
+the SPI flash, the microSD card or the serial port. `mp32img` makes what it loads: a
+header of 32 bytes, then the program, the linker's raw output (`format = bin`, see
+`computer/os.cfg`) padded to a multiple of 4 bytes.
+
+    mp32ld -C os.cfg -o build/os.bin -m build/os.map build/os.o
+    mp32img -o build/os.img build/os.bin
+
+| offset | word (little-endian) |
+|---|---|
+| +0 | `mp32` (`$3233706D`) |
+| +4 | load (`--load`, default 0): where the program goes, 1 KB aligned; the loader sets VEC = load, so the program begins with its vector table |
+| +8 | size: the program's bytes |
+| +12 | entry (`--entry`, default load): where the loader jumps to |
+| +16 | the program's words added up, modulo 2^32 |
+| +20, +24 | 0 |
+| +28 | makes the eight header words add up to 0 |
+
+It refuses what the loader would refuse (load not 1 KB aligned, entry outside the
+program, a program that goes past `$780000`, where the screen starts). `--info`
+checks an image as the loader does and prints its header. The format is
+`src/Mp32.Core/BootImage.cs`.
 
 ## The object and library formats
 
