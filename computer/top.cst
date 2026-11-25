@@ -5,6 +5,9 @@
 // The SPI flash: MSPI_CLK 59, MSPI_CS 60, MSPI_DI 61, MSPI_DO 62 of the board's
 // schematic (as in github.com/calint/tang-nano-20k--riscv--cache-sdram).
 // The sound (the MAX98357A): Sipeed's TangNano-20K-example, audio/src/audio.cst.
+// The keyboard's module: pin 42 as in chapter 21 of the book (the 5th hole of the row on
+// the side of S2, from the USB-C end), and the hole after it, pin 41, for the way back.
+// Both go only to the LCD connector, which stays empty (bank 4, 3.3 V).
 // The SDRAM inside the GW2AR-18: its pins have no numbers on the package, only the
 // names of the I/O cells they are wired to (as in the constraints of
 // github.com/ArthurHeymans/tang_20k_spi_flash, which uses the same SDRAM with yosys and
@@ -80,6 +83,11 @@ IO_LOC  "hp_ws" 55;
 IO_PORT "hp_ws" IO_TYPE=LVCMOS33 PULL_MODE=UP DRIVE=8;
 IO_LOC  "hp_bck" 56;
 IO_PORT "hp_bck" IO_TYPE=LVCMOS33 PULL_MODE=UP DRIVE=8;
+// ---- the keyboard and the mouse: a CH9350L module, both ways (../keyboard/keyboard.v)
+IO_LOC  "kbd_rx" 42;
+IO_PORT "kbd_rx" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "kbd_tx" 41;
+IO_PORT "kbd_tx" IO_TYPE=LVCMOS33;
 // ---- the SDRAM
 IO_LOC  "O_sdram_clk" IOR11B;
 IO_PORT "O_sdram_clk" IO_TYPE=LVCMOS33;

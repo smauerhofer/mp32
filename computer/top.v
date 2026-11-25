@@ -14,6 +14,8 @@
 //   SPI flash      the 8 MB flash that holds the bitstream; read by the boot loader
 //                  (pins 59 .. 62; gowin_pack --mspi_as_gpio makes them ours)
 //   speaker        the MAX98357A (I2S), a 4 or 8 ohm speaker on the 2-pin header
+//   keyboard       a CH9350L module (KAmod USB HID Extender, DEVICE side, state 2)
+//                  with a USB keyboard and mouse: its TXD on pin 42, its RXD on 41
 //   SDRAM          the 8 MB inside the chip
 //
 // Reset: while the PLLs settle and while S1 is held, and 16 ticks after; synchronous
@@ -39,6 +41,8 @@ module top #(
     output wire        hp_ws,
     output wire        hp_din,
     output wire        pa_en,
+    input  wire        kbd_rx,              // from the keyboard's module (its TXD)
+    output wire        kbd_tx,              // to it (its RXD)
     output wire        tmds_clk_p,
     output wire        tmds_clk_n,
     output wire [2:0]  tmds_d_p,
@@ -64,9 +68,9 @@ module top #(
         .locked(locked)
     );
 
-    // ================================================================ reset, buttons, serial in
+    // ================================================================ reset, buttons, serial ins
     // Each through two flip-flops on cpu_clk (they change when a finger decides).
-    reg [1:0] s1 = 2'b11, s2 = 2'b00, rx = 2'b11;
+    reg [1:0] s1 = 2'b11, s2 = 2'b00, rx = 2'b11, krx = 2'b11;
     reg [4:0] hold = 5'd0;
     reg       reset = 1'b1;
 
@@ -74,6 +78,7 @@ module top #(
         s1 <= {s1[0], btn1};
         s2 <= {s2[0], btn2};
         rx <= {rx[0], uart_rx};
+        krx <= {krx[0], kbd_rx};
         if (!locked | s1[1]) begin hold <= 5'd0; reset <= 1'b1; end
         else if (!hold[4])   begin hold <= hold + 5'd1; reset <= 1'b1; end
         else                 reset <= 1'b0;
@@ -91,6 +96,7 @@ module top #(
         .flash_clk(flash_clk), .flash_mosi(flash_mosi), .flash_miso(flash_miso),
         .flash_cs_n(flash_cs_n),
         .hp_bck(hp_bck), .hp_ws(hp_ws), .hp_din(hp_din), .pa_en(pa_en),
+        .kbd_rx(krx[1]), .kbd_tx(kbd_tx),
         .tmds_blue(blue_code), .tmds_green(green_code), .tmds_red(red_code),
         .O_sdram_clk(O_sdram_clk), .O_sdram_cke(O_sdram_cke), .O_sdram_cs_n(O_sdram_cs_n),
         .O_sdram_ras_n(O_sdram_ras_n), .O_sdram_cas_n(O_sdram_cas_n),

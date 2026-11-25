@@ -61,6 +61,7 @@ module computer_tb;
         .sd_clk(c_clk), .sd_mosi(c_mosi), .sd_miso(c_miso), .sd_cs_n(c_cs_n),
         .flash_clk(f_clk), .flash_mosi(f_mosi), .flash_miso(f_miso), .flash_cs_n(f_cs_n),
         .hp_bck(bck), .hp_ws(ws), .hp_din(din), .pa_en(pa_en),
+        .kbd_rx(1'b1), .kbd_tx(),               // no keyboard here: ../keyboard tests it
         .tmds_blue(), .tmds_green(), .tmds_red(),
         .O_sdram_clk(sd_clk), .O_sdram_cke(sd_cke), .O_sdram_cs_n(sd_cs_n),
         .O_sdram_ras_n(sd_ras_n), .O_sdram_cas_n(sd_cas_n), .O_sdram_wen_n(sd_wen_n),

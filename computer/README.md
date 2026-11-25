@@ -2,8 +2,9 @@
 
 The whole computer: the processor (`../cpu`), its memory (block RAM, cache, the 8 MB
 SDRAM inside the chip), a serial port, the microSD card, the SPI flash, the sound (the
-board's MAX98357A and a speaker) and the picture (HDMI, 640 x 480), with a boot loader
-and a first operating system for it to load.
+board's MAX98357A and a speaker), a USB keyboard and mouse (through a CH9350L module)
+and the picture (HDMI, 640 x 480), with a boot loader and a first operating system for
+it to load.
 
 ```
 make test       the boot loader and the operating system, then the whole computer in
@@ -24,7 +25,7 @@ come from `../toolchain/bin`.
 
 | file | what |
 |---|---|
-| `top.v` | the board: the clocks, reset, buttons, LEDs, the HDMI serializers and pairs |
+| `top.v` | the board: the clocks, reset, buttons, LEDs, the keyboard's wire, the HDMI serializers and pairs |
 | `pll.v` | 126 MHz (HDMI), 25.2 MHz (pixels), 42 MHz (processor; the rPLL's `CLKOUTD3`) |
 | `computer.v` | the computer: processor, memory system, I/O decoder, devices, picture |
 | `iodec.v` | the address map of the I/O devices, and the interrupt controller |
@@ -50,6 +51,7 @@ come from `../toolchain/bin`.
 | `FFFF_0300` | sound: +0 DATA, +4 STATUS, +8 CTRL, +12 DIV, +16 TONE, +20 LEN, +24 BSTATUS, +28 BLEN, +32 READY (`../audio/audio.v`) |
 | `FFFF_0400` | interrupt controller: +0 PENDING (read), +4 MASK, +8 NUMBER (read), +12 ISR (read) / EOI (write) (`../cpu/irqc.v`) |
 | `FFFF_0500` | SPI flash: +0 DATA, +4 DATA32, +8 CTRL, +12 DATA32LE (`../sdcard/sdcard.v` again, 21 MHz) |
+| `FFFF_0600` | keyboard and mouse: +0 STATUS, +4 KEYS0, +8 KEYS1, +12 MOUSE, +16 BUTTONS, +20 LEDS, +24 CTRL (`../keyboard/keyboard.v`) |
 | `FFFF_8000 - FFFF_9FFF` | the video unit's font RAM (4 fonts) |
 | `FFFF_A000 - FFFF_AFFF` | its registers: `A020` text_base, `A024` pixel_base, `A028` IRQ_LINE, `A02C` IRQ_CTRL, `A030` IRQ_STATUS, `A034` LINE, `A400 - A7FF` palette |
 | `FFFF_B000 - FFFF_BFFF` | its mode RAM (which blocks are graphics) |
@@ -152,6 +154,7 @@ vector 16 + k, and the lower the line, the higher its priority:
 | 1 | 17 | the display's frame interrupt | write 2 to IRQ_STATUS (bit 1) |
 | 2 | 18 | the sound | fill the bank, write READY, clear DONE |
 | 3 | 19 | the serial port | read the bytes (RXIE), or fill the queue (TXIE) |
+| 4 | 20 | the keyboard and the mouse | read the reports (KIE: KEYS0, then KEYS1), or MOUSE (MIE) |
 
 A line asks while its device's irq is 1. With its bit in MASK set it interrupts the
 processor when I = 1, unless a line of the same or a higher priority is in service.
@@ -183,10 +186,26 @@ played to its end, its DONE bit in BSTATUS goes to 1 and, with CTRL bit 3 (BIE),
 sound's irq: the handler fills that bank, writes READY and clears DONE. The irq is
 line 2 of the interrupt controller: vector 18. All the registers are described in `audio.v`.
 
+## The keyboard and the mouse
+
+A USB keyboard and a USB mouse plug into a CH9350L module (Kamami's KAmod USB HID
+Extender, its DEVICE side), as in chapter 21 of the book, but wired both ways: the
+module's TXD to pin 42 (`kbd_rx`), its RXD to pin 41 (`kbd_tx`), 5V and GND to its J4.
+Jumpers: SEL off, STAT0 on, STAT1 off, BAUD0 and BAUD1 off (state 2, 115,200 baud),
+and **no** jumper between GND and RXD: that wire is now ours. `../keyboard/keyboard.v`
+cuts the module's frames by their length, keeps the keyboard's reports in a queue of 8
+(repeats dropped), adds up the mouse's movements, and sends the module the keyboard's
+LEDs (LEDS, with CTRL bit 2 TXEN) in the frame an upper CH9350L sends, about once a
+second and at each write. All the registers are described in `keyboard.v`;
+`../keyboard/README.md` has the wiring.
+
 ## Not yet
 
 - a handler for the sound's interrupt in the operating system
-- the keyboard and the mouse
+- a driver in the operating system for the keyboard and the mouse (the device is
+  there, `../keyboard`): key codes to characters, as chapter 22 of the book does
+- the keyboard and the mouse on the board: the frames and the LEDs are tried in
+  simulation only (`../keyboard/ch9350.v`, a model of the chip on both wires)
 - a garbage collector, a monitor
 - a file system on the card: the loader reads the raw card
 - the flash is only read: writing it (erase, page program) is up to a program

@@ -9,6 +9,8 @@
 //   ../uart/uart.v               the serial port (to the PC, over the USB-C cable)
 //   ../sdcard/sdcard.v           the microSD card, and (a second one) the SPI flash
 //   ../audio/audio.v             the sound: I2S to the board's MAX98357A
+//   ../keyboard/keyboard.v       the keyboard and the mouse: a CH9350L module on a
+//                                serial line both ways (reports in, the LEDs out)
 //   ../display2/video.v          the picture: text and graphics from the SDRAM
 //   raster.v, tmds.v             the raster and the HDMI encoders (the book's)
 //
@@ -30,7 +32,8 @@ module computer #(
     parameter        FONT_FILE    = "fonts.hex",
     parameter        PALETTE_FILE = "palette.hex",
     parameter [15:0] UART_DIV     = 16'd365,       // 115,200 baud at 42 MHz
-    parameter [7:0]  AUDIO_DIV    = 8'd7           // 46,875 Hz at 42 MHz
+    parameter [7:0]  AUDIO_DIV    = 8'd7,          // 46,875 Hz at 42 MHz
+    parameter [15:0] KBD_DIV      = 16'd365        // the keyboard's module: 115,200 baud
 ) (
     input  wire        clk,
     input  wire        pixel_clk,
@@ -53,6 +56,8 @@ module computer #(
     output wire        hp_ws,
     output wire        hp_din,
     output wire        pa_en,           // its amplifier on
+    input  wire        kbd_rx,          // the keyboard's module: its TXD, already on clk
+    output wire        kbd_tx,          // to its RXD
 
     // ---- the picture: the three HDMI codes, on pixel_clk
     output wire [9:0]  tmds_blue,
@@ -126,11 +131,13 @@ module computer #(
     wire        uart_sel, uart_ready, sd_sel, sd_ready, vid_sel, vid_ready;
     wire        flash_sel, flash_ready;
     wire        audio_sel, audio_ready;
+    wire        kbd_sel, kbd_ready;
+    wire        kbd_irq;            // the keyboard: a report waits, or the mouse moved
     wire [12:0] audio_addr;
     wire        uart_irq;           // the serial port: a byte came, or room to send
     wire        audio_irq;          // the sound: the queue half empty, or a bank played
     wire        line_irq, frame_irq;    // the display: a line, the vertical blank
-    wire [31:0] uart_rdata, sd_rdata, flash_rdata, vid_rdata, audio_rdata;
+    wire [31:0] uart_rdata, sd_rdata, flash_rdata, vid_rdata, audio_rdata, kbd_rdata;
     wire [17:0] vid_addr;
 
     iodec io (
@@ -140,10 +147,11 @@ module computer #(
         .uart_sel(uart_sel), .uart_rdata(uart_rdata), .uart_ready(uart_ready),
         .sd_sel(sd_sel), .sd_rdata(sd_rdata), .sd_ready(sd_ready),
         .flash_sel(flash_sel), .flash_rdata(flash_rdata), .flash_ready(flash_ready),
+        .kbd_sel(kbd_sel), .kbd_rdata(kbd_rdata), .kbd_ready(kbd_ready),
         .audio_sel(audio_sel), .audio_addr(audio_addr), .audio_rdata(audio_rdata), .audio_ready(audio_ready),
         .vid_sel(vid_sel), .vid_addr(vid_addr), .vid_rdata(vid_rdata), .vid_ready(vid_ready),
         .leds(leds), .buttons(buttons),
-        .irq_lines({4'b0000, uart_irq, audio_irq, frame_irq, line_irq}),
+        .irq_lines({3'b000, kbd_irq, uart_irq, audio_irq, frame_irq, line_irq}),
         .irq(irq), .irq_num(irq_num), .irq_ack(irq_ack), .irq_ack_num(irq_ack_num)
     );
 
@@ -177,6 +185,14 @@ module computer #(
         .io_wdata(io_wdata), .io_rdata(audio_rdata), .io_ready(audio_ready),
         .irq(audio_irq),                                   // line 2: vector 18
         .hp_bck(hp_bck), .hp_ws(hp_ws), .hp_din(hp_din), .pa_en(pa_en)
+    );
+
+    keyboard #(.DIV(KBD_DIV)) keys (
+        .clk(clk), .reset(reset),
+        .io_sel(kbd_sel), .io_we(io_we), .io_be(io_be), .io_addr(io_addr[4:2]),
+        .io_wdata(io_wdata), .io_rdata(kbd_rdata), .io_ready(kbd_ready),
+        .irq(kbd_irq),                                     // line 4: vector 20
+        .kbd_rx(kbd_rx), .kbd_tx(kbd_tx)
     );
 
     // ================================================================ the picture
