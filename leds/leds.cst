@@ -1,0 +1,14 @@
+// Tang Nano 20K: the six LEDs, for leds.v. led[0] is nearest the USB-C port.
+// An LED is lit when its pin is low.
+IO_LOC  "led[0]" 15;
+IO_PORT "led[0]" DRIVE=8 IO_TYPE=LVCMOS18;
+IO_LOC  "led[1]" 16;
+IO_PORT "led[1]" DRIVE=8 IO_TYPE=LVCMOS18;
+IO_LOC  "led[2]" 17;
+IO_PORT "led[2]" DRIVE=8 IO_TYPE=LVCMOS18;
+IO_LOC  "led[3]" 18;
+IO_PORT "led[3]" DRIVE=8 IO_TYPE=LVCMOS18;
+IO_LOC  "led[4]" 19;
+IO_PORT "led[4]" DRIVE=8 IO_TYPE=LVCMOS18;
+IO_LOC  "led[5]" 20;
+IO_PORT "led[5]" DRIVE=8 IO_TYPE=LVCMOS18;
