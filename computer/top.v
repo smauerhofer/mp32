@@ -6,7 +6,10 @@
 //
 // The board:
 //   S1 (btn1)      held: reset. The computer starts again from the block RAM.
-//   S2 (btn2)      a button the program can read (BUTTONS, bit 1)
+//                  Unless the program has made it a button (CTRL.S1INT, $FFFF_020C,
+//                  see iodec.v): then it can interrupt and resets nothing.
+//   S2 (btn2)      a button the program can read (BUTTONS, bit 1), and that can
+//                  interrupt (CTRL.S2IE)
 //   6 LEDs         what the program writes to LEDS (lit when the pin is low)
 //   USB-C          the serial port to the PC (the BL616), 115,200 baud 8N1
 //   HDMI           640 x 480 at 60 Hz
@@ -18,8 +21,9 @@
 //                  with a USB keyboard and mouse: its TXD on pin 42, its RXD on 41
 //   SDRAM          the 8 MB inside the chip
 //
-// Reset: while the PLLs settle and while S1 is held, and 16 ticks after; synchronous
-// to the processor's clock.
+// Reset: while the PLLs settle and while S1 is held (when S1 is the reset: s1_reset,
+// which every reset makes 1 again), and 16 ticks after; synchronous to the
+// processor's clock.
 module top #(
     parameter CPU_PLL = 0                   // see pll.v
 ) (
@@ -73,13 +77,14 @@ module top #(
     reg [1:0] s1 = 2'b11, s2 = 2'b00, rx = 2'b11, krx = 2'b11;
     reg [4:0] hold = 5'd0;
     reg       reset = 1'b1;
+    wire      s1_reset;                     // from the computer: S1 is the reset
 
     always @(posedge cpu_clk) begin
         s1 <= {s1[0], btn1};
         s2 <= {s2[0], btn2};
         rx <= {rx[0], uart_rx};
         krx <= {krx[0], kbd_rx};
-        if (!locked | s1[1]) begin hold <= 5'd0; reset <= 1'b1; end
+        if (!locked | (s1[1] & s1_reset)) begin hold <= 5'd0; reset <= 1'b1; end
         else if (!hold[4])   begin hold <= hold + 5'd1; reset <= 1'b1; end
         else                 reset <= 1'b0;
     end
@@ -90,7 +95,7 @@ module top #(
 
     computer mp32 (
         .clk(cpu_clk), .pixel_clk(pixel_clk), .reset(reset),
-        .buttons({s2[1], s1[1]}), .leds(leds),
+        .buttons({s2[1], s1[1]}), .leds(leds), .s1_reset(s1_reset),
         .uart_rx(rx[1]), .uart_tx(uart_tx),
         .sd_clk(sd_clk), .sd_mosi(sd_mosi), .sd_miso(sd_miso), .sd_cs_n(sd_cs_n),
         .flash_clk(flash_clk), .flash_mosi(flash_mosi), .flash_miso(flash_miso),

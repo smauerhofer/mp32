@@ -2,6 +2,7 @@
 #   make test       the boot loader and the operating system, then the whole computer
 #                   in simulation (computer_tb.v, with models of the SDRAM, the SPI
 #                   flash and the microSD card): it boots from each of the three
+#   make test-iodec the I/O decoder's board registers and the buttons (iodec_tb.v)
 #   make boot       only the boot loader: build/boot.hex (and boot.lst, boot.map)
 #   make os         only the operating system: build/os.img (and os.lst, os.map)
 #   make board      synthesize, place and route, pack: build/top.fs
@@ -87,6 +88,14 @@ $(BUILD)/computer_tb.vvp: computer_tb.v $(COMPUTER) $(MODELS)
 	mkdir -p $(BUILD)
 	iverilog -g2005 -DMP32_SIM -s computer_tb -o $@ $^
 
+# the I/O decoder alone: LEDS, BUTTONS, TICKS, CTRL and the buttons' interrupt
+test-iodec: $(BUILD)/iodec_tb.vvp
+	cd $(BUILD) && vvp iodec_tb.vvp
+
+$(BUILD)/iodec_tb.vvp: iodec_tb.v iodec.v ../cpu/irqc.v
+	mkdir -p $(BUILD)
+	iverilog -g2005 -s iodec_tb -o $@ $^
+
 # ---------------------------------------------------------------- the board
 board: $(BUILD)/top.fs
 
@@ -118,5 +127,5 @@ os-send: $(BUILD)/os.img
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all boot os test board flash burn os-burn os-send clean
+.PHONY: all boot os test test-iodec board flash burn os-burn os-send clean
 .PRECIOUS: $(BUILD)/%.json $(BUILD)/boot.o $(BUILD)/os.o $(BUILD)/os.bin

@@ -47,7 +47,7 @@ come from `../toolchain/bin`.
 | `F000_0000 - F000_00BF` | its vector table (VEC after reset): entry n at `F000_0000 + 4n` (0 reset, 1 undefined opcode, the rest: "unexpected") |
 | `FFFF_0000` | serial port: +0 DATA, +4 STATUS, +8 DIV, +12 CTRL (`../uart/uart.v`) |
 | `FFFF_0100` | microSD: +0 DATA, +4 DATA32, +8 CTRL, +12 DATA32LE (`../sdcard/sdcard.v`) |
-| `FFFF_0200` | +0 LEDS (bits 5..0, 1 = lit), +4 BUTTONS (bit 0 S1, bit 1 S2), +8 TICKS |
+| `FFFF_0200` | +0 LEDS (bits 5..0, 1 = lit), +4 BUTTONS (bit 0 S1, bit 1 S2), +8 TICKS, +12 CTRL (the buttons: bit 0 S1INT, 1 S1IE, 2 S2IE, 8 S1F, 9 S2F; see below) |
 | `FFFF_0300` | sound: +0 DATA, +4 STATUS, +8 CTRL, +12 DIV, +16 TONE, +20 LEN, +24 BSTATUS, +28 BLEN, +32 READY (`../audio/audio.v`) |
 | `FFFF_0400` | interrupt controller: +0 PENDING (read), +4 MASK, +8 NUMBER (read), +12 ISR (read) / EOI (write) (`../cpu/irqc.v`) |
 | `FFFF_0500` | SPI flash: +0 DATA, +4 DATA32, +8 CTRL, +12 DATA32LE (`../sdcard/sdcard.v` again, 21 MHz) |
@@ -155,6 +155,7 @@ vector 16 + k, and the lower the line, the higher its priority:
 | 2 | 18 | the sound | fill the bank, write READY, clear DONE |
 | 3 | 19 | the serial port | read the bytes (RXIE), or fill the queue (TXIE) |
 | 4 | 20 | the keyboard and the mouse | read the reports (KIE: KEYS0, then KEYS1), or MOUSE (MIE) |
+| 5 | 21 | the buttons S1, S2 | write 1 to CTRL's S1F (bit 8) or S2F (bit 9) |
 
 A line asks while its device's irq is 1. With its bit in MASK set it interrupts the
 processor when I = 1, unless a line of the same or a higher priority is in service.
@@ -167,6 +168,27 @@ IRQ_LINE (or of every line, with IRQ_CTRL bit 2), in time to change the palette 
 base for the next line in the horizontal blank (6.35 us); the frame interrupt at the
 end of line 479, at the start of the vertical blank. Each has a flag in IRQ_STATUS
 that holds it until the handler clears it. See `../display2/video.v`.
+
+## The buttons
+
+CTRL, at `FFFF_020C` (in `iodec.v`), says what S1 and S2 do. After reset it is 0: S1
+is the hardware reset, and neither button interrupts.
+
+| bit | name | what |
+|-----|------|------|
+| 0 | S1INT | 0: S1 is the reset (held, it resets the whole computer; nothing switches that off but S1INT). 1: S1 is a button that can interrupt, and resets nothing |
+| 1 | S1IE | S1 interrupts when pressed; only with S1INT = 1 (written with S1INT = 0, it stays 0) |
+| 2 | S2IE | S2 interrupts when pressed |
+| 8 | S1F | S1 was pressed (with S1INT = 1); write 1 to clear |
+| 9 | S2F | S2 was pressed; write 1 to clear |
+
+A press counts when the button has been down for 12.5 ms in a row (debounced), and
+sets its flag whatever the enables say: clear the flags before enabling. The buttons'
+irq is `(S1F & S1IE) | (S2F & S2IE)`, line 5 of the interrupt controller (vector 21).
+BUTTONS (`FFFF_0204`) still shows both buttons as they are.
+
+With S1INT = 1, S1 no longer starts the boot loader: only a reset of the FPGA (power,
+a new bitstream) brings S1 back as the reset, unless the program writes S1INT = 0.
 
 ## The sound
 

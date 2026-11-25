@@ -42,6 +42,7 @@ module computer #(
     // ---- the board
     input  wire [1:0]  buttons,         // 1 = pressed, already on clk
     output wire [5:0]  leds,            // 1 = lit
+    output wire        s1_reset,        // 1: S1 is the reset (iodec.v, CTRL.S1INT = 0)
     input  wire        uart_rx,
     output wire        uart_tx,
     output wire        sd_clk,
@@ -150,7 +151,8 @@ module computer #(
         .kbd_sel(kbd_sel), .kbd_rdata(kbd_rdata), .kbd_ready(kbd_ready),
         .audio_sel(audio_sel), .audio_addr(audio_addr), .audio_rdata(audio_rdata), .audio_ready(audio_ready),
         .vid_sel(vid_sel), .vid_addr(vid_addr), .vid_rdata(vid_rdata), .vid_ready(vid_ready),
-        .leds(leds), .buttons(buttons),
+        .leds(leds), .buttons(buttons), .s1_reset(s1_reset),
+        // line 5, the buttons, is made in iodec.v
         .irq_lines({3'b000, kbd_irq, uart_irq, audio_irq, frame_irq, line_irq}),
         .irq(irq), .irq_num(irq_num), .irq_ack(irq_ack), .irq_ack_num(irq_ack_num)
     );
