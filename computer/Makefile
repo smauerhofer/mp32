@@ -10,9 +10,19 @@
 #   make burn       write it into the board's flash (stays)
 #   make os-burn    write build/os.img into the board's flash at $400000, where the
 #                   boot loader looks first (the bitstream at 0 stays)
-#   make os-send PORT=/dev/ttyS3
+#   make os-send PORT=COM4
 #                   send build/os.img over the serial port, to a boot loader that
-#                   found nothing in the flash and on the card (COM4 is /dev/ttyS3)
+#                   found nothing in the flash and on the card
+#   make boot-serial PORT=COM4
+#                   start the board again and boot build/os.img over the serial port:
+#                   loads the bitstream into the board (as make flash: that resets
+#                   it), waits until the boot loader asks for the image, sends it,
+#                   then shows what the board says (Ctrl-C to stop). For it the flash
+#                   must hold no image at $400000 and the card slot be empty
+#
+# The serial port goes through boot_serial.py (pyserial: python -m pip install
+# pyserial): on Windows, stty cannot put the board's port into raw mode. PORT takes
+# COM4 or /dev/ttyS3 (COMn is /dev/ttyS(n-1)); no terminal may have it open.
 #   make clean      throw away what the build made
 #
 # The assembler, the linker and mp32img come from ../toolchain/bin: build the
@@ -30,7 +40,10 @@ LD       = $(TOOLS)/mp32ld
 IMG      = $(TOOLS)/mp32img
 # where the image goes in the flash: FLASH_IMAGE in boot.s
 OS_FLASH = 0x400000
-PORT    ?= /dev/ttyS3
+PORT    ?= COM4
+PYTHON  ?= python
+# boot-serial: how long to wait for the boot loader to ask for the image (s)
+WAIT    ?= 30
 
 CPU = ../cpu/cpu.v ../cpu/irqc.v \
       ../cpu/stage1/fetch.v ../cpu/stage1/pc.v ../cpu/stage1/irq_sequence.v \
@@ -121,11 +134,17 @@ os-burn: $(BUILD)/os.img
 	openFPGALoader -b tangnano20k --external-flash -o $(OS_FLASH) --file-type bin $<
 
 os-send: $(BUILD)/os.img
-	stty -F $(PORT) 115200 raw -echo
-	cat $< > $(PORT)
+	$(PYTHON) boot_serial.py --port $(PORT) --image $< --send-only
+
+# The port is opened before the bitstream goes in, so nothing the board says is
+# missed; the loader's lines are shown until it asks for the image, then the image
+# goes out and the rest is shown.
+boot-serial: $(BUILD)/top.fs $(BUILD)/os.img
+	$(PYTHON) boot_serial.py --port $(PORT) --bitstream $(BUILD)/top.fs \
+		--image $(BUILD)/os.img --wait $(WAIT)
 
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all boot os test test-iodec board flash burn os-burn os-send clean
+.PHONY: all boot os test test-iodec board flash burn os-burn os-send boot-serial clean
 .PRECIOUS: $(BUILD)/%.json $(BUILD)/boot.o $(BUILD)/os.o $(BUILD)/os.bin

@@ -32,6 +32,7 @@ module memsys #(
     parameter        CAS        = 2,
     parameter        RD_LAT     = CAS + 1,
     parameter        EXT_CLK    = 0,
+    parameter        RD_NEG     = 0,                  // see sdram.v
     parameter        INDEX_BITS = 9,                  // cache: 2^9 lines of 16 bytes
     parameter [22:0] WT_FROM    = 23'h780000,         // write-through (the video's)
     parameter [22:0] WT_TO      = 23'h7FFFFF,
@@ -112,7 +113,7 @@ module memsys #(
     // ================================================================ the cache and the SDRAM
     cache #(
         .INDEX_BITS(INDEX_BITS), .CLK_MHZ(CLK_MHZ), .CAS(CAS), .RD_LAT(RD_LAT),
-        .WT_FROM(WT_FROM), .WT_TO(WT_TO), .EXT_CLK(EXT_CLK)
+        .WT_FROM(WT_FROM), .WT_TO(WT_TO), .EXT_CLK(EXT_CLK), .RD_NEG(RD_NEG)
     ) cache (
         .clk(clk), .clk_sdram(clk_sdram), .reset(reset),
         .cpu_sel(c_sel), .cpu_we(c_we), .cpu_be(c_be), .cpu_addr(c_addr),

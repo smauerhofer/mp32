@@ -33,7 +33,13 @@ module bram #(
 
     integer i;
     initial begin
+        // The zero fill is for simulation only: in yosys, a loop that writes the
+        // memory before $readmemh in the same initial block throws the file's
+        // contents away (the block RAM came up empty on the board). yosys defines
+        // SYNTHESIS; lines the file does not give are 0 on the chip anyway.
+`ifndef SYNTHESIS
         for (i = 0; i < LINES; i = i + 1) ram[i] = 128'h0;
+`endif
         if (INIT != "") $readmemh(INIT, ram);
     end
 

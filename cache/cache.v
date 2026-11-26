@@ -68,7 +68,8 @@ module cache #(
     parameter REFRESH_NS = 7800,       // see sdram.v
     parameter [22:0] WT_FROM = 23'h780000,   // the write-through region, see above
     parameter [22:0] WT_TO   = 23'h7FFFFF,
-    parameter EXT_CLK    = 0           // see sdram.v
+    parameter EXT_CLK    = 0,          // see sdram.v
+    parameter RD_NEG     = 0           // see sdram.v
 ) (
     input  wire        clk,
     input  wire        clk_sdram,      // see sdram.v: used only with EXT_CLK = 1
@@ -120,7 +121,7 @@ module cache #(
 
     sdram #(
         .CLK_MHZ(CLK_MHZ), .CAS(CAS), .RD_LAT(RD_LAT), .REFRESH_NS(REFRESH_NS),
-        .EXT_CLK(EXT_CLK)
+        .EXT_CLK(EXT_CLK), .RD_NEG(RD_NEG)
     ) sdram (
         .clk(clk), .clk_sdram(clk_sdram), .reset(reset),
         .req(mem_req), .we(mem_we), .addr(mem_addr),

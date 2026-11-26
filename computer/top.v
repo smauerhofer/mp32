@@ -93,7 +93,7 @@ module top #(
     wire [5:0] leds;
     wire [9:0] blue_code, green_code, red_code;
 
-    computer mp32 (
+    computer #(.RD_LAT(3), .RD_NEG(1)) mp32 (   // see computer.v
         .clk(cpu_clk), .pixel_clk(pixel_clk), .reset(reset),
         .buttons({s2[1], s1[1]}), .leds(leds), .s1_reset(s1_reset),
         .uart_rx(rx[1]), .uart_tx(uart_tx),

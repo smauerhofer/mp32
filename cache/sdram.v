@@ -81,7 +81,9 @@ module sdram #(
     parameter CAS        = 2,          // CAS latency, 2 or 3
     parameter RD_LAT     = CAS + 1,    // ticks from READ out to the first word sampled
     parameter REFRESH_NS = 7800,       // one AUTO REFRESH this often
-    parameter EXT_CLK    = 0           // 1: the SDRAM's clock is clk_sdram, not ~clk
+    parameter EXT_CLK    = 0,          // 1: the SDRAM's clock is clk_sdram, not ~clk
+    parameter RD_NEG     = 0           // 1: read data taken at the falling edge of clk,
+                                       // half a tick before RD_LAT's rising edge
 ) (
     input  wire         clk,
     input  wire         clk_sdram,     // used only with EXT_CLK = 1
@@ -173,6 +175,14 @@ module sdram #(
     assign IO_sdram_dq = dq_oe ? dq_out : 32'bz;
     assign dq_in = IO_sdram_dq;
 `endif
+
+    // RD_NEG = 1: the read data is caught at the falling edge of clk and used at the
+    // rising edge after it, so it is taken RD_LAT - 1/2 ticks after the READ. On the
+    // board at 42 MHz, RD_LAT = 3 took the next word and RD_LAT = 2 caught the data
+    // while it changed; 2 1/2 is between them.
+    reg  [31:0] dq_neg;
+    always @(negedge clk) dq_neg <= dq_in;
+    wire [31:0] dq_rd = RD_NEG ? dq_neg : dq_in;
 
     // ================================================================ the machine
     localparam [2:0] S_INIT   = 3'd0,    // NOPs for 200 us
@@ -314,7 +324,7 @@ module sdram #(
                                      col + tb[7:2], 2'b00};
                 end
                 if (op == OP_BURST && tr < {count, 2'b00}) begin
-                    vword  <= dq_in;
+                    vword  <= dq_rd;
                     vvalid <= 1'b1;
                     if (tr == {count, 2'b00} - 1'b1)
                         vack <= 1'b1;
@@ -332,10 +342,10 @@ module sdram #(
 
                 // read: words 0-3 sampled at the ends of ticks T_RCD+RD_LAT-1 ..
                 if (op == OP_READ && tr < 4) case (tr[1:0])
-                    2'd0: rline[31:0]   <= dq_in;
-                    2'd1: rline[63:32]  <= dq_in;
-                    2'd2: rline[95:64]  <= dq_in;
-                    2'd3: rline[127:96] <= dq_in;
+                    2'd0: rline[31:0]   <= dq_rd;
+                    2'd1: rline[63:32]  <= dq_rd;
+                    2'd2: rline[95:64]  <= dq_rd;
+                    2'd3: rline[127:96] <= dq_rd;
                 endcase
                 if (op == OP_READ && t == T_RCD + RD_LAT + 2)
                     ack <= 1'b1;                          // rline is complete

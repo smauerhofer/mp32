@@ -33,7 +33,12 @@ module computer #(
     parameter        PALETTE_FILE = "palette.hex",
     parameter [15:0] UART_DIV     = 16'd365,       // 115,200 baud at 42 MHz
     parameter [7:0]  AUDIO_DIV    = 8'd7,          // 46,875 Hz at 42 MHz
-    parameter [15:0] KBD_DIV      = 16'd365        // the keyboard's module: 115,200 baud
+    parameter [15:0] KBD_DIV      = 16'd365,       // the keyboard's module: 115,200 baud
+    // when the SDRAM's read data is taken, see ../cache/sdram.v: RD_LAT = 3 (CAS + 1)
+    // and RD_NEG = 0 for the simulation's model; on the board (top.v) RD_NEG = 1,
+    // 2 1/2 ticks (at 3 every word came one late, at 2 the bits flickered)
+    parameter        RD_LAT       = 3,
+    parameter        RD_NEG       = 0
 ) (
     input  wire        clk,
     input  wire        pixel_clk,
@@ -112,7 +117,8 @@ module computer #(
     wire [6:0]   vmem_count;
     wire [31:0]  vmem_word;
 
-    memsys #(.CLK_MHZ(CLK_MHZ), .EXT_CLK(0), .BRAM_INIT(BOOT)) memory (
+    memsys #(.CLK_MHZ(CLK_MHZ), .EXT_CLK(0), .RD_LAT(RD_LAT), .RD_NEG(RD_NEG),
+             .BRAM_INIT(BOOT)) memory (
         .clk(clk), .clk_sdram(1'b0), .reset(reset),
         .d_sel(data_sel), .d_we(data_we), .d_be(data_be), .d_addr(data_addr),
         .d_wdata(data_wdata), .d_rdata(data_rdata), .d_ready(data_ready),

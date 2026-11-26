@@ -24,8 +24,8 @@ IO_LOC  "uart_rx" 70;
 IO_PORT "uart_rx" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 IO_LOC  "uart_tx" 69;
 IO_PORT "uart_tx" IO_TYPE=LVCMOS33;
-# LVCMOS33, not the book's LVCMOS18: the LEDs share their I/O bank with the SDRAM,
-# and a bank takes one I/O standard (as in ArthurHeymans/tang_20k_spi_flash)
+// LVCMOS33, not the book's LVCMOS18: the LEDs share their I/O bank with the SDRAM,
+// and a bank takes one I/O standard (as in ArthurHeymans/tang_20k_spi_flash)
 IO_LOC  "led[0]" 15;
 IO_PORT "led[0]" DRIVE=8 IO_TYPE=LVCMOS33;
 IO_LOC  "led[1]" 16;
