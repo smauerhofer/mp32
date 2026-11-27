@@ -102,6 +102,11 @@ sd card: loading 00000660 bytes to 00000000 ok, start at 00000000
 ```
 
 (and `bad header`, `bad checksum`, `read error`, `no card`; a dot for every 64 KB).
+
+Loading from the serial port, the loader writes the `loading ...` line to the screen
+while the image comes in and to the serial port only once it is all there (without
+the dots): the board's USB serial bridge (the BL616) loses bytes to the PC while the
+PC sends. The screen keeps what the loader wrote; `os.s` goes on below it, at row 8.
 All six LEDs at once: an undefined opcode, an exception or an interrupt in the loader
 itself.
 

@@ -67,7 +67,9 @@
 ;   r9  $100  r10 UART  r11 text  r12 column * 4  r13 LEDs  r14 the row's address
 ;   r16 the colors of a character (ink 82, paper 0, font 0)  r17 320 (a row)
 ;   r18 the end of the text  r20 the source (1 flash, 2 card, 3 serial port)
-;   r21 the source's SPI device (flash or card)  r22 the card: words left in the block
+;   r21 the source's SPI device (flash or card)  r22 the card: words left in the block;
+;       the serial port: what putc writes to (0 both, 1 the screen only, 2 the serial
+;       port only, see phase 3)
 ;   r23 the card: the next block  r24 the card: 1 = block addresses (SDHC), 0 = bytes
 ;   r25 -1 (four bytes of $FF to send)  r31 0
 ;   r26 load  r27 size  r28 entry  r29 sum (from the header, phase 2 on)
@@ -142,6 +144,8 @@ start:  LIT     -$FE00                  ; $FFFF_0200: the LEDs
         MOVR    r16, T
         MOVI2   r25, -1
         MOVI2   r31, 0
+        MOVI2   r20, 0                  ; no source yet: putc writes to both
+        MOVI2   r22, 0
 
         CALL    cls
         LEA     msg_banner
@@ -203,6 +207,7 @@ start:  LIT     -$FE00                  ; $FFFF_0200: the LEDs
 ; ---- the serial port: waits for an image
 @serial:
         MOVI2   r20, 3
+        MOVI2   r22, 0                  ; putc: to both (r22 was the card's)
         LEA     msg_serial
         MOVR    r6, T
         CALL    puts
@@ -222,20 +227,27 @@ start:  LIT     -$FE00                  ; $FFFF_0200: the LEDs
         B       A, stop
 
 ; ================================================================ 3. load it
-phase3: LEA     msg_loading             ; "loading <size> bytes to <load> "
-        MOVR    r6, T
-        CALL    puts
-        MOV2    r6, r27
-        CALL    puthex
-        LEA     msg_bytes_to
-        MOVR    r6, T
-        CALL    puts
-        MOV2    r6, r26
-        CALL    puthex
-        MOVI2   r1, ' '
-        CALL    putc
+; From the serial port, the image comes in while the loader would say what it does:
+; the board's USB serial bridge (the BL616) loses bytes that go to the PC while bytes
+; come from it. So then the line goes to the screen only while the image comes in
+; (with its dots), and to the serial port once it is all there (without the dots).
+phase3: MOVI2   r1, 3
+        CMP2    r20, r1
+        B       NE, @say
+        MOVI2   r22, 1                  ; the serial port: the screen only, for now
+@say:   CALL    say_loading
         CALL    payload
-        CMP2    r1, r31
+        MOVI2   r3, 3
+        CMP2    r20, r3
+        B       NE, @said
+        MOV2    r7, r1                  ; (payload's answer: r1, r6)
+        MOV2    r8, r6
+        MOVI2   r22, 2                  ; the image is in: the same line, to the
+        CALL    say_loading             ; serial port only
+        MOVI2   r22, 0                  ; from now on to both
+        MOV2    r1, r7
+        MOV2    r6, r8
+@said:  CMP2    r1, r31
         B       EQ, @loaded
         CALL    puts                    ; why (r6)
         CALL    close
@@ -756,8 +768,38 @@ ser_get32:
         RET
 
 ; ================================================================ the screen and the UART
-; putc: the byte in r1 to the serial port and to the screen. Uses r2 .. r4.
-putc:   STR     r1, r10                 ; the UART (waits while its queue is full)
+; say_loading: "loading <size> bytes to <load> ", with putc. Uses r1 .. r6.
+say_loading:
+        LEA     msg_loading
+        MOVR    r6, T
+        CALL    puts
+        MOV2    r6, r27
+        CALL    puthex
+        LEA     msg_bytes_to
+        MOVR    r6, T
+        CALL    puts
+        MOV2    r6, r26
+        CALL    puthex
+        MOVI2   r1, ' '
+        CALL    putc
+        RET
+
+; putc: the byte in r1 to the serial port and to the screen. Uses r2 .. r4. While
+; the image comes in on the serial port (r20 = 3), r22 picks: 1 the screen only, 2
+; the serial port only, 0 both.
+putc:   MOVI2   r3, 3
+        CMP2    r20, r3
+        B       NE, @both
+        MOVI2   r3, 1
+        CMP2    r22, r3
+        B       EQ, @screen             ; 1: the screen only
+        STR     r1, r10
+        MOVI2   r3, 2
+        CMP2    r22, r3
+        B       EQ, putc_done           ; 2: the serial port only
+        B       A, @screen
+@both:  STR     r1, r10                 ; the UART (waits while its queue is full)
+@screen:
         MOVI2   r3, 13
         CMP2    r1, r3
         B       EQ, newline             ; CR: a new line
