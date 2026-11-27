@@ -1,7 +1,8 @@
 # The keyboard and the mouse
 
-A USB keyboard and a USB mouse for the mp32 computer, through a CH9350L module: the
-KAmod USB HID Extender from Kamami, its DEVICE side, as in chapter 21 of the book.
+A USB keyboard and a USB mouse for the mp32 computer, through a CH9350L module (a
+generic one, below; the book's chapter 21 uses the KAmod USB HID Extender from Kamami),
+on its lower side.
 The chip is the USB host of the keyboard and the mouse, and talks to us on a serial
 line at 115,200 baud. Unlike the book, the line goes **both ways**: the module sends
 the reports of the keyboard and the mouse, and we send back the state of the
@@ -26,28 +27,49 @@ The receiver and the transmitter are the serial port's: `../uart/uart_rx.v` and
 
 ## Wiring
 
+The module: a generic "CH9350 module" (Fruugo, part I500792981): a 5-way DIP switch,
+a 5-pin header (5V, TX, RX, 485 control, GND) and a stacked double USB-A socket.
+
 The row of twenty holes along the board's edge on the side of S2, from the USB-C end:
 5V, GND, 76, 80, 42, 41, ... Six header pins in the first six holes, then:
 
 | board | module |
 |---|---|
-| hole 1, 5V | J4 5VOUT |
-| hole 2, GND | J4 GND |
-| hole 5, pin 42 (`kbd_rx`) | J1 TXD |
-| hole 6, pin 41 (`kbd_tx`) | J1 RXD |
+| hole 1, 5V | 5V |
+| hole 2, GND | GND |
+| hole 5, pin 42 (`kbd_rx`) | TX, **through a divider** (below) |
+| hole 6, pin 41 (`kbd_tx`) | RX |
+| - | 485控制 (TNOW, the RS-485 direction): not connected |
 
-Jumpers on the module:
+The chip runs on the 5 V of the header (the module has no 3.3 V regulator), so TX
+swings to 5 V, and the GW2AR's pins take 3.3 V at most. Measure TX at rest: if it is
+about 5 V, put a divider before pin 42:
 
-| jumper | |
-|---|---|
-| SEL, row P1 | off: the DEVICE side (the chip is the keyboard's host) |
-| STAT0 on, STAT1 off, row P1 | working state 2: keyboard + relative mouse |
-| BAUD0, BAUD1 off, row P1 | 115,200 baud |
-| GND - RXD, row P3 | **off**. In the book it makes the line one way; here RXD is our wire. With the jumper on, pin 41 would drive a wire tied to GND. |
+```
+module TX ---[ 1k ]---+--- pin 42
+                      |
+                    [ 2k ]
+                      |
+                     GND
+```
 
-The keyboard goes into USB 2 (KEYBOARD), the mouse into USB 1. Nothing goes into the
-module's USB-C socket. As in the book, measure TXD (3.3 V at rest) before it touches
-pin 42.
+(2.2k / 3.3k works too.) Pin 41 at 3.3 V into RX is high enough for the chip at 5 V.
+
+The DIP switch, read at power-up only (change it with the power off). A switch that is
+ON ties its pin to GND: ON = 0, OFF = 1 (the board marks 0 above, 1 below).
+
+| switch | pin | position | |
+|---|---|---|---|
+| 1 | SEL | OFF (1) | the lower computer: the chip is the USB host of the keyboard and mouse |
+| 2 | BA1 | OFF (1) | 115,200 baud (the default, BA1 = BA0 = 1) |
+| 3 | BA0 | OFF (1) | |
+| 4 | S1 | OFF (1) | working state 2: keyboard + relative mouse |
+| 5 | S0 | ON (0) | |
+
+So only switch 5 is ON. (S1 = 1, S0 = 0 is the KAmod's STAT1 off, STAT0 on.)
+
+The keyboard and the mouse go into the two USB-A sockets, either one into either
+(upper: DM/DP, lower: HM/HP); both are host ports on the lower computer.
 
 Pins 42 and 41 go only to the LCD connector, which stays empty. Both are in
 `../computer/top.cst`.
