@@ -11,6 +11,7 @@
 //   ../audio/audio.v             the sound: I2S to the board's MAX98357A
 //   ../keyboard/keyboard.v       the keyboard and the mouse: a CH9350L module on a
 //                                serial line both ways (reports in, the LEDs out)
+//   ../timer/timer.v             two timers: regular interrupts, fast and slow
 //   ../display2/video.v          the picture: text and graphics from the SDRAM
 //   raster.v, tmds.v             the raster and the HDMI encoders (the book's)
 //
@@ -140,11 +141,14 @@ module computer #(
     wire        audio_sel, audio_ready;
     wire        kbd_sel, kbd_ready;
     wire        kbd_irq;            // the keyboard: a report waits, or the mouse moved
+    wire        timer_sel, timer_ready;
+    wire        timer0_irq, timer1_irq; // the timers: the fast one, the slow one
     wire [12:0] audio_addr;
     wire        uart_irq;           // the serial port: a byte came, or room to send
     wire        audio_irq;          // the sound: the queue half empty, or a bank played
     wire        line_irq, frame_irq;    // the display: a line, the vertical blank
     wire [31:0] uart_rdata, sd_rdata, flash_rdata, vid_rdata, audio_rdata, kbd_rdata;
+    wire [31:0] timer_rdata;
     wire [17:0] vid_addr;
 
     iodec io (
@@ -155,11 +159,12 @@ module computer #(
         .sd_sel(sd_sel), .sd_rdata(sd_rdata), .sd_ready(sd_ready),
         .flash_sel(flash_sel), .flash_rdata(flash_rdata), .flash_ready(flash_ready),
         .kbd_sel(kbd_sel), .kbd_rdata(kbd_rdata), .kbd_ready(kbd_ready),
+        .timer_sel(timer_sel), .timer_rdata(timer_rdata), .timer_ready(timer_ready),
         .audio_sel(audio_sel), .audio_addr(audio_addr), .audio_rdata(audio_rdata), .audio_ready(audio_ready),
         .vid_sel(vid_sel), .vid_addr(vid_addr), .vid_rdata(vid_rdata), .vid_ready(vid_ready),
         .leds(leds), .buttons(buttons), .s1_reset(s1_reset),
         // line 5, the buttons, is made in iodec.v
-        .irq_lines({3'b000, kbd_irq, uart_irq, audio_irq, frame_irq, line_irq}),
+        .irq_lines({timer1_irq, timer0_irq, 1'b0, kbd_irq, uart_irq, audio_irq, frame_irq, line_irq}),
         .irq(irq), .irq_num(irq_num), .irq_ack(irq_ack), .irq_ack_num(irq_ack_num)
     );
 
@@ -201,6 +206,14 @@ module computer #(
         .io_wdata(io_wdata), .io_rdata(kbd_rdata), .io_ready(kbd_ready),
         .irq(kbd_irq),                                     // line 4: vector 20
         .kbd_rx(kbd_rx), .kbd_tx(kbd_tx)
+    );
+
+    timer #(.CLK_HZ(CLK_MHZ * 1_000_000)) timers (
+        .clk(clk), .reset(reset),
+        .io_sel(timer_sel), .io_we(io_we), .io_be(io_be), .io_addr(io_addr[5:2]),
+        .io_wdata(io_wdata), .io_rdata(timer_rdata), .io_ready(timer_ready),
+        .irq0(timer0_irq),                                 // line 6: vector 22
+        .irq1(timer1_irq)                                  // line 7: vector 23
     );
 
     // ================================================================ the picture

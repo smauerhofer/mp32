@@ -56,7 +56,7 @@ CPU = ../cpu/cpu.v ../cpu/irqc.v \
 MEM = ../cpu/stage4/memsys.v ../cpu/stage4/membus.v ../cpu/stage4/bram.v \
       ../cache/cache.v ../cache/sdram.v
 DEV = iodec.v ../uart/uart.v ../uart/uart_rx.v ../uart/uart_tx.v ../uart/fifo.v \
-      ../sdcard/sdcard.v ../audio/audio.v ../keyboard/keyboard.v \
+      ../sdcard/sdcard.v ../audio/audio.v ../keyboard/keyboard.v ../timer/timer.v \
       ../display2/video.v raster.v tmds.v
 COMPUTER = computer.v $(CPU) $(MEM) $(DEV)
 BOARD    = top.v pll.v serializer.v $(COMPUTER)

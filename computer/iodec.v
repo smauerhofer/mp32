@@ -24,12 +24,17 @@
 //                                 3  the serial port
 //                                 4  the keyboard and the mouse
 //                                 5  the buttons (made here, see below)
+//                                 6  timer 0, the fast one
+//                                 7  timer 1, the slow one
 //   0xFFFF_0500 - 0xFFFF_05FF   the SPI flash (the board's, which also holds the FPGA's
 //                               bitstream; ../sdcard/sdcard.v a second time): +0 DATA,
 //                               +4 DATA32, +8 CTRL, +12 DATA32LE
 //   0xFFFF_0600 - 0xFFFF_06FF   the keyboard and the mouse (../keyboard/keyboard.v):
 //                               +0 STATUS, +4 KEYS0, +8 KEYS1, +12 MOUSE, +16 BUTTONS,
 //                               +20 LEDS, +24 CTRL
+//   0xFFFF_0700 - 0xFFFF_07FF   the two timers (../timer/timer.v): +0 T0CTRL,
+//                               +4 T0PERIOD, +8 T0COUNT, +16 T1CTRL, +20 T1PERIOD,
+//                               +24 T1COUNT, +32 FREQ
 //   0xFFFF_C000 - 0xFFFF_CFFF   the sound's sample memory: two banks of 1024 samples,
 //                               two to a word (bank 0 at C000, bank 1 at C800)
 //   0xFFFF_8000 - 0xFFFF_BFFF   the video unit (../display2/video.v), whose own
@@ -107,6 +112,11 @@ module iodec #(
     input  wire [31:0] kbd_rdata,
     input  wire        kbd_ready,
 
+    // ---- the timers
+    output wire        timer_sel,
+    input  wire [31:0] timer_rdata,
+    input  wire        timer_ready,
+
     // ---- the sound
     output wire        audio_sel,
     output wire [12:0] audio_addr,     // bit 12: the sample memory
@@ -135,6 +145,7 @@ module iodec #(
     wire is_sd    = (io_addr[15:8] == 8'h01);
     wire is_flash = (io_addr[15:8] == 8'h05);
     wire is_kbd   = (io_addr[15:8] == 8'h06);
+    wire is_timer = (io_addr[15:8] == 8'h07);
     wire is_irqc  = (io_addr[15:8] == 8'h04);
     wire is_board = (io_addr[15:8] == 8'h02) | is_irqc;   // answered here
     wire is_amem  = (io_addr[15:12] == 4'hC);         // 0xC000 - 0xCFFF
@@ -143,12 +154,13 @@ module iodec #(
     wire is_regs  = (io_addr[15:12] == 4'hA);
     wire is_modes = (io_addr[15:12] == 4'hB);
     wire is_vid   = is_font | is_regs | is_modes;
-    wire is_none  = !(is_uart | is_sd | is_flash | is_kbd | is_board | is_audio | is_vid);
+    wire is_none  = !(is_uart | is_sd | is_flash | is_kbd | is_timer | is_board | is_audio | is_vid);
 
     assign uart_sel = io_sel & is_uart;
     assign sd_sel   = io_sel & is_sd;
     assign flash_sel = io_sel & is_flash;
     assign kbd_sel  = io_sel & is_kbd;
+    assign timer_sel = io_sel & is_timer;
     assign audio_sel = io_sel & is_audio;
     assign audio_addr = is_amem ? {1'b1, io_addr[11:0]} : {5'b00000, io_addr[7:0]};
     assign vid_sel  = io_sel & is_vid;
@@ -242,6 +254,7 @@ module iodec #(
         else if (is_sd)   begin io_rdata = sd_rdata;   io_ready = sd_ready;   end
         else if (is_flash) begin io_rdata = flash_rdata; io_ready = flash_ready; end
         else if (is_kbd)  begin io_rdata = kbd_rdata;  io_ready = kbd_ready;  end
+        else if (is_timer) begin io_rdata = timer_rdata; io_ready = timer_ready; end
         else if (is_audio) begin io_rdata = audio_rdata; io_ready = audio_ready; end
         else if (is_vid)  begin io_rdata = vid_rdata;  io_ready = vid_ready;  end
         else              begin io_rdata = here_rdata; io_ready = here_ready; end

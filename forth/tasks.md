@@ -128,4 +128,6 @@ An example, once it is there:
 - a second terminal: the serial port and the keyboard as two terminal tasks, each
   with its own `'KEY` and `'EMIT` (the user area has them already). Today both go
   through the one input queue, to whichever task waits in `KEY`.
-- `MS` on `TICKS`, so a task can sleep for a time.
+- `MS` on `TICKS`, so a task can sleep for a time: timer 0 (`../timer/timer.v`,
+  vector 22) counts `TICKS` every millisecond and wakes the tasks whose time is up;
+  timer 1 (vector 23) for the slow things (the cursor's blink, time-outs).

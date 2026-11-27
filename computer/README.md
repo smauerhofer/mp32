@@ -16,6 +16,10 @@ make os         build/os.img, the operating system's image
 make os-burn    write build/os.img into the board's flash at $400000
 make os-send PORT=/dev/ttyS3
                 send build/os.img over the serial port (COM4 is /dev/ttyS3)
+make boot-serial PORT=/dev/ttyS3
+                start the board again (the bitstream into it, as make flash) and
+                boot build/os.img over the serial port; shows what the board says
+                until Ctrl-C
 ```
 
 Rename `Makefile.txt` to `Makefile` first. The assembler, the linker and `mp32img`
@@ -52,6 +56,7 @@ come from `../toolchain/bin`.
 | `FFFF_0400` | interrupt controller: +0 PENDING (read), +4 MASK, +8 NUMBER (read), +12 ISR (read) / EOI (write) (`../cpu/irqc.v`) |
 | `FFFF_0500` | SPI flash: +0 DATA, +4 DATA32, +8 CTRL, +12 DATA32LE (`../sdcard/sdcard.v` again, 21 MHz) |
 | `FFFF_0600` | keyboard and mouse: +0 STATUS, +4 KEYS0, +8 KEYS1, +12 MOUSE, +16 BUTTONS, +20 LEDS, +24 CTRL (`../keyboard/keyboard.v`) |
+| `FFFF_0700` | two timers: +0 T0CTRL, +4 T0PERIOD, +8 T0COUNT, +16 T1CTRL, +20 T1PERIOD, +24 T1COUNT, +32 FREQ (`../timer/timer.v`) |
 | `FFFF_8000 - FFFF_9FFF` | the video unit's font RAM (4 fonts) |
 | `FFFF_A000 - FFFF_AFFF` | its registers: `A020` text_base, `A024` pixel_base, `A028` IRQ_LINE, `A02C` IRQ_CTRL, `A030` IRQ_STATUS, `A034` LINE, `A400 - A7FF` palette |
 | `FFFF_B000 - FFFF_BFFF` | its mode RAM (which blocks are graphics) |
@@ -60,14 +65,33 @@ come from `../toolchain/bin`.
 ## The boot loader
 
 `boot.s`, in the block RAM: the processor starts it after reset (and after S1). It
-loads the operating system into the SDRAM and starts it. It looks in three places, in
-this order, and takes the first good image:
+loads the operating system into the SDRAM and starts it, in four phases; the LEDs
+(LED0 is the one nearest the USB-C port) and the speaker say how far it got:
+
+| phase | what | LEDs | sound | failed |
+|---|---|---|---|---|
+| 0 | | all off | | |
+| 1 | initialize the processor: stacks, registers, screen | LED0 | a short beep (0.1 s) | |
+| 2 | find a boot method: the first place with an image whose header is good | LED0, LED1 | | LED1 blinks at 1 Hz, 2 long beeps |
+| 3 | load the operating system: copy it, check its sum | LED0, LED1; LED2 blinks at 2 Hz while loading, then stays on | | LED2 blinks at 1 Hz, 3 long beeps |
+| 4 | jump to it | LED0 .. LED2 (until it changes them) | | |
+
+A long beep is 0.5 s, while the LED is on. After a failure the loader stops for
+good: the LED goes on blinking (the beeps only the first times), until S1 or a new
+bitstream starts it again.
+
+The places it looks in phase 2, in this order:
 
 1. **the SPI flash**, at `$400000` (`FLASH_IMAGE`; the bitstream is at 0, 8 MB in all)
 2. **the microSD card**, from block 0 (`SD_LBA`): the raw card, no file system. SDHC,
    SDXC and SDSC cards; it starts the card at 396 kHz, then reads at 21 MHz
 3. **the serial port**: it says `serial port: send the image` and waits as long as it
    takes; whatever comes before the image's first word is skipped
+
+A place with no image, or one with a bad header, is passed over: the next one is
+tried. Only the serial port, the last place, fails phase 2 (with a bad header). The
+place with a good header is the boot method: if loading from it fails in phase 3
+(`bad checksum`, `read error`), the loader stops; it does not try the next place.
 
 It says what it does on the serial port (115,200 baud) and on the screen, e.g.
 
@@ -78,7 +102,8 @@ sd card: loading 00000660 bytes to 00000000 ok, start at 00000000
 ```
 
 (and `bad header`, `bad checksum`, `read error`, `no card`; a dot for every 64 KB).
-The LEDs: 1 the flash, 2 the card, 4 the serial port; all six: it stopped.
+All six LEDs at once: an undefined opcode, an exception or an interrupt in the loader
+itself.
 
 ### The image
 
@@ -109,9 +134,14 @@ image is reported, and the next place is tried.
 - **card:** the image raw from block 0, e.g. as administrator in the MinGW shell
   `dd if=build/os.img of=/dev/sdX` (find X with `cat /proc/partitions`; this
   overwrites the card's partition table), or with a raw disk writer.
-- **serial port:** `make os-send PORT=/dev/ttyS3` (COM4), or from cmd: `mode COM4
-  BAUD=115200 PARITY=n DATA=8 STOP=1` and `copy /b build\os.img COM4`. 1 MB takes
-  about 90 s at 115,200 baud.
+- **serial port:** `make boot-serial PORT=/dev/ttyS3` (COM4) does it all: it loads
+  the bitstream into the board (which starts the loader again), waits until the
+  loader asks for the image, sends it and then shows what the board says (Ctrl-C to
+  stop). It needs the flash empty at `$400000` and the card slot empty, so the loader
+  gets to the serial port; no terminal program may have the port open. By hand:
+  press S1, wait for `serial port: send the image`, then `make os-send
+  PORT=/dev/ttyS3`, or from cmd: `mode COM4 BAUD=115200 PARITY=n DATA=8 STOP=1` and
+  `copy /b build\os.img COM4`. 1 MB takes about 90 s at 115,200 baud.
 
 ### The handover
 
@@ -156,6 +186,8 @@ vector 16 + k, and the lower the line, the higher its priority:
 | 3 | 19 | the serial port | read the bytes (RXIE), or fill the queue (TXIE) |
 | 4 | 20 | the keyboard and the mouse | read the reports (KIE: KEYS0, then KEYS1), or MOUSE (MIE) |
 | 5 | 21 | the buttons S1, S2 | write 1 to CTRL's S1F (bit 8) or S2F (bit 9) |
+| 6 | 22 | timer 0, the fast one | write CTRL with F (bit 8, and OVR bit 9) set |
+| 7 | 23 | timer 1, the slow one | the same, its CTRL |
 
 A line asks while its device's irq is 1. With its bit in MASK set it interrupts the
 processor when I = 1, unless a line of the same or a higher priority is in service.
@@ -207,6 +239,20 @@ CTRL bit 0 switches the amplifier on, bit 2 plays the banks. When a bank has bee
 played to its end, its DONE bit in BSTATUS goes to 1 and, with CTRL bit 3 (BIE), the
 sound's irq: the handler fills that bank, writes READY and clears DONE. The irq is
 line 2 of the interrupt controller: vector 18. All the registers are described in `audio.v`.
+
+## The timers
+
+`../timer/timer.v`: two timers, the same but for their lines, the two least urgent:
+timer 0 (line 6, vector 22) for the fast events (e.g. every millisecond), timer 1
+(line 7, vector 23) for the slow ones (e.g. every 100 ms). Each counts the
+processor's ticks down from PERIOD - 1 to 0, sets its flag F, and starts again: an
+event every PERIOD ticks exactly, however late its handler comes (a lost one sets
+OVR). ONESHOT stops it after one. FREQ (+32) reads the ticks per second (42,000,000),
+so a program gets 1 ms as FREQ / 1000 without knowing the clock.
+
+    T0PERIOD = FREQ / 1000      ; 1 ms
+    T0CTRL   = 3                ; EN, IE; MASK bit 6 on, SEI
+    handler: T0CTRL = $303 (clear F, OVR; EN, IE kept), EOI, RTI
 
 ## The keyboard and the mouse
 

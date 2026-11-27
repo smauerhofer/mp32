@@ -42,6 +42,7 @@ module iodec_tb;
         .sd_sel(), .sd_rdata(32'h0), .sd_ready(1'b0),
         .flash_sel(), .flash_rdata(32'h0), .flash_ready(1'b0),
         .kbd_sel(), .kbd_rdata(32'h0), .kbd_ready(1'b0),
+        .timer_sel(), .timer_rdata(32'h0), .timer_ready(1'b0),
         .audio_sel(), .audio_addr(), .audio_rdata(32'h0), .audio_ready(1'b0),
         .vid_sel(), .vid_addr(), .vid_rdata(32'h0), .vid_ready(1'b0),
         .leds(leds), .buttons(buttons), .s1_reset(s1_reset),
