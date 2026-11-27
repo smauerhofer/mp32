@@ -7,31 +7,40 @@
 ;   r31 = UP = the task + $80  the running task's user area: LDR3 / STR3 T, r31, U_...
 ; With the $80 bias the 8-bit offset (-128 .. 127) reaches the first 256 bytes.
 
-; ---------------------------------------------------------------- page zero
-GLOBALS     = $0000             ; the system's variables (all tasks), 1 KB
+; ---------------------------------------------------------------- the image
+LOAD        = $0                ; the vector table (VEC = 0), then the kernel
+DICT_END    = $200000           ; the dictionary grows from the kernel's end up to here
+HEAP0       = $200000           ; the free memory: ALLOCATE and the CONS heap
+HEAP_END    = $770000
+
+; ---------------------------------------------------------------- the system area
+; 64 KB at a fixed address right below the screen, not in the image: COLD clears and
+; fills it. Its layout is the same at any address: only SYSTEM would change.
+SYSTEM      = $770000
+GLOBALS     = SYSTEM + $0000    ; the system's variables (all tasks), 1 KB
 GP_BASE     = GLOBALS + $80     ; r30
-INQ         = $0400             ; the input queue (serial port and keyboard), 1024 bytes
+INQ         = SYSTEM + $0400    ; the input queue (serial port and keyboard), 1024 bytes
 INQ_SIZE    = 1024
-OUTQ        = $0800             ; the serial port's output queue, 1024 bytes
+OUTQ        = SYSTEM + $0800    ; the serial port's output queue, 1024 bytes
 OUTQ_SIZE   = 1024
-DRIVERS     = $0C00             ; the drivers' state (keyboard, screen), 1 KB
-OPERATOR    = $1000             ; OPERATOR's task area (below), 4 KB
-FREE0       = $2000             ; free, up to $7FFF (block buffers, ...)
+DRIVERS     = SYSTEM + $0C00    ; the drivers' state (keyboard, screen), 1 KB
+OPERATOR    = SYSTEM + $1000    ; OPERATOR's task area (below), 4 KB
+FREE0       = SYSTEM + $2000    ; free, 24 KB (block buffers, ...)
 
 ; ---------------------------------------------------------------- OPERATOR
 ; the terminal task that runs the interpreter after COLD; its stacks are the big ones
 OP_UP       = OPERATOR + $80    ; r31 while OPERATOR runs
-OP_TIB      = $1200             ; 1 KB (a pasted line may be long)
+OP_TIB      = SYSTEM + $1200    ; 1 KB (a pasted line may be long)
 OP_TIB_SIZE = 1024
-OP_WORD     = $1600             ; 256 bytes
-OP_HOLD     = $1800             ; HLD grows down from here (from $1700)
-OP_PAD      = $1800             ; 512 bytes
+OP_WORD     = SYSTEM + $1600    ; 256 bytes
+OP_HOLD     = SYSTEM + $1800    ; HLD grows down from here (from SYSTEM + $1700)
+OP_PAD      = SYSTEM + $1800    ; 512 bytes
 OP_PAD_SIZE = 512
 
-OP_RSTACK   = $8000             ; the return stack: $8000 .. $BFFF, 4096 cells
-OP_PSTACK   = $C000             ; the parameter stack: $C000 .. $FFFF, 4096 cells
-OP_R0       = $BFFC             ; RSP when empty
-OP_S0       = $FFFC             ; PSP when empty
+OP_RSTACK   = SYSTEM + $8000    ; the return stack: 16 KB, 4096 cells
+OP_PSTACK   = SYSTEM + $C000    ; the parameter stack: 16 KB, 4096 cells
+OP_R0       = SYSTEM + $BFFC    ; RSP when empty
+OP_S0       = SYSTEM + $FFFC    ; PSP when empty
 
 ; ---------------------------------------------------------------- every task
 USER_SIZE   = 512               ; the user area: 128 cells
@@ -41,12 +50,6 @@ RS_HEADROOM = 64 * 4            ; words below RSPL, for INTR / EXC (interrupts r
 TERM_BUFS   = 1024              ; TERMINAL only: TIB 256, WORD 256, HOLD 256, PAD 256
 TASK_RS     = 1024              ; return stack, 256 cells (64 of them headroom)
 TASK_PS     = 1024              ; parameter stack, 256 cells
-
-; ---------------------------------------------------------------- the image
-LOAD        = $10000            ; the vector table (VEC), then the kernel
-DICT_END    = $200000           ; the dictionary grows from the kernel's end up to here
-HEAP0       = $200000           ; the free memory: ALLOCATE and the CONS heap
-HEAP_END    = $780000
 
 ; ---------------------------------------------------------------- the screen
 TEXT        = $780000           ; 60 rows of 80 cells

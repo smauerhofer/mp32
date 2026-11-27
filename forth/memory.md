@@ -19,7 +19,7 @@ The numbers are in `memmap.inc`; the kernel and every later program include it.
 
 | register | value | what |
 |---|---|---|
-| r30 = GP | `$0080` | the system's variables, `$0000 - $03FF` (`G_...`) |
+| r30 = GP | `$0077_0080` | the system's variables, `$0077_0000 - $0077_03FF` (`G_...`) |
 | r31 = UP | the running task + `$80` | its user area (`U_...`); PAUSE changes it |
 
 With the `$80` bias one `LDR3` / `STR3` (offset -128 .. 127) reaches the first 256
@@ -30,26 +30,25 @@ has r31 half way to the next task.
 
 | address | size | what |
 |---|---|---|
-| `0000_0000 - 0000_FFFF` | 64 KB | **page zero**: the globals, the queues, OPERATOR's task area and its stacks. Fixed addresses, not in the image; COLD clears and fills it |
-| `0001_0000 - 0001_03FF` | 1 KB | the vector table (VEC), the first part of the image |
-| `0001_0400 - ...` | ~16..32 KB | the kernel: primitives and the core words, headers and code |
-| `HERE - 001F_FFFF` | ~1.9 MB | **the dictionary** grows up from the end of the kernel; the task areas of `TASK` / `TERMINAL` are allotted in it |
-| `0020_0000 - 0077_FFFF` | 5.5 MB | free memory: `ALLOCATE` and the CONS heap (L, HLIM), split later |
+| `0000_0000 - 0000_03FF` | 1 KB | the vector table (VEC = 0), the first part of the image |
+| `0000_0400 - ...` | ~16..32 KB | the kernel: primitives and the core words, headers and code |
+| `HERE - 001F_FFFF` | ~2 MB | **the dictionary** grows up from the end of the kernel; the task areas of `TASK` / `TERMINAL` are allotted in it |
+| `0020_0000 - 0076_FFFF` | 5.4 MB | free memory: `ALLOCATE` and the CONS heap (L, HLIM), split later |
+| `0077_0000 - 0077_FFFF` | 64 KB | **the system area**: the globals, the queues, OPERATOR's task area and its stacks. Fixed addresses, not in the image; COLD clears and fills it |
 | `0078_0000 - 007F_FFFF` | 512 KB | the screen (write-through): text at `0078_0000`, pixels at `0079_0000` |
 | `F000_0000 - F000_1FFF` | 8 KB | the boot loader (block RAM), as before |
 | `FFFF_0000 - FFFF_FFFF` | | the I/O, as before (`../computer/README.md`) |
 
-### Why the image moves to `0001_0000`
+The image is loaded at 0, as `os.s` is: one contiguous program from the vector table
+on, and the dictionary right after it. The fixed part lives at the top of the RAM,
+below the screen, where it needs no room in the image (the BSS is not loaded, and
+the loader does not clear it). Its address hardly matters: the code reaches it
+through GP and UP, and only COLD names `SYSTEM` (`$770000`, one `LIT24`). To move
+it, change `SYSTEM` in `memmap.inc`.
 
-The image is loaded at `$10000` (`mp32img --load $10000`; the loader sets VEC to
-it), not at 0. That frees the first 64 KB for things at **fixed** addresses, which
-need not travel in the image (64 KB of zeros would take about 6 s on the serial
-port). Below `$8000` an address fits a `LIT16` (`DUP LIT16 addr`, 4 bytes, not 5):
-the 6502's zero page again. The loader needs no change.
+## The system area (`0077_0000 - 0077_FFFF`)
 
-## Page zero
-
-| address | size | what |
+| SYSTEM + | size | what |
 |---|---|---|
 | `0000 - 03FF` | 1 KB | the **globals** (GP): the queues' pointers, the cursor, the facilities, ... |
 | `0400 - 07FF` | 1 KB | the **input queue**: a ring of 1024 bytes. The serial port's handler (vector 19) and the keyboard's (vector 20, key codes to characters) put characters in, `KEY` takes them out |
@@ -60,9 +59,9 @@ the 6502's zero page again. The loader needs no change.
 | `8000 - BFFF` | 16 KB | OPERATOR's **return stack**: 4096 cells |
 | `C000 - FFFF` | 16 KB | OPERATOR's **parameter stack**: 4096 cells |
 
-### The globals (`0000 - 03FF`, r30 = `$0080`)
+### The globals (SYSTEM + `0000 - 03FF`, r30 = `$0077_0080`)
 
-| address | GP + | name | what |
+| SYSTEM + | GP + | name | what |
 |---|---|---|---|
 | `0000` | -128 | `IN-HEAD` | the input queue: where the handlers write |
 | `0004` | -124 | `IN-TAIL` | where `KEY` reads |
@@ -92,13 +91,15 @@ background task has only the user area and its stacks.
 
 | part | OPERATOR | `TERMINAL` | `TASK` (background) |
 |---|---|---|---|
-| user area | `1000 - 11FF` | 512 B | 512 B |
-| TIB | `1200 - 15FF` (1 KB) | 256 B | - |
-| WORD's buffer | `1600 - 16FF` | 256 B | - |
-| HOLD (`HLD` grows down) | `1700 - 17FF` | 256 B | - |
-| PAD | `1800 - 19FF` | 256 B | - |
-| return stack | `8000 - BFFF` (16 KB) | 1 KB (default) | 1 KB (default) |
-| parameter stack | `C000 - FFFF` (16 KB) | 1 KB | 1 KB |
+| user area | +`1000 - 11FF` | 512 B | 512 B |
+| TIB | +`1200 - 15FF` (1 KB) | 256 B | - |
+| WORD's buffer | +`1600 - 16FF` | 256 B | - |
+| HOLD (`HLD` grows down) | +`1700 - 17FF` | 256 B | - |
+| PAD | +`1800 - 19FF` | 256 B | - |
+| return stack | +`8000 - BFFF` (16 KB) | 1 KB (default) | 1 KB (default) |
+| parameter stack | +`C000 - FFFF` (16 KB) | 1 KB | 1 KB |
+
+(OPERATOR's addresses are SYSTEM + these: its UP is `$0077_1080`.)
 
 The words find the buffers through the user area (`'TIB`, `'WORD`, `'HOLD`, `'PAD`),
 not through constants: the same `ACCEPT`, `WORD`, `<#` work in every terminal task.
@@ -156,7 +157,7 @@ its size):
 | `RSPH` | (B - 4) \| 1 | 11 | -6 return stack underflow |
 | `RSPL` | (A + 256 - 4) \| 1 | 10 | -5 return stack overflow |
 
-For OPERATOR: PSPH `$FFFD`, PSPL `$BFFD`, RSPH `$BFFD`, RSPL `$80FD`.
+For OPERATOR: PSPH `$0077_FFFD`, PSPL `$0077_BFFD`, RSPH `$0077_BFFD`, RSPL `$0077_80FD`.
 
 With T and S in registers this works out: on the empty stack a `DROP` pops the
 memory (S moves to T, the memory to S), and the pointer is at PSPH: underflow,
@@ -178,7 +179,7 @@ Frames (`ENTER` / `LEAVE`, FP) are on the return stack, for locals later.
 ## The dictionary
 
 One linked list per word list, newest first, in one region: the kernel's words come
-with the image at `$10400`.., the new ones follow at `HERE`, up to `DICT_END`
+with the image at `$400`.., the new ones follow at `HERE`, up to `DICT_END`
 (`$200000`). Headers and code are together: each word's code right after its
 header. Task areas are allotted in it, between the words.
 
@@ -189,9 +190,9 @@ New code goes through the cache like data: a word compiled now can be run at onc
 Only the 16-byte instruction buffer of fetch can hold old bytes, and a jump or a call
 to the new word reloads it.
 
-## The free memory (`0020_0000 - 0077_FFFF`)
+## The free memory (`0020_0000 - 0076_FFFF`)
 
-5.5 MB, for `ALLOCATE` / `FREE` and for the CONS heap of the LISP opcodes (L, HLIM).
+5.4 MB, for `ALLOCATE` / `FREE` and for the CONS heap of the LISP opcodes (L, HLIM).
 Where one ends and the other begins is not decided yet: COLD takes it from `HEAP`.
 L and HLIM are the same for all tasks; the tasks do not interrupt each other
 (`tasks.md`), so a CONS is never cut in half by another task.
@@ -205,15 +206,11 @@ L and HLIM are the same for all tasks; the tasks do not interrupt each other
 | `0079_0000 - 007D_AFFF` | the pixels: 480 lines of 640 bytes |
 | `007D_B000 - 007F_FFFF` | free (148 KB) |
 
-The cache keeps the last line written here in its write-combining buffer (`cache.v`)
-and sends it to the SDRAM when another line is written, before any miss, or at the
-latest 512 ticks (about 12 us) later. Bytes stored one after the other cost one SDRAM
-burst per 16 bytes; the picture shows them less than a line of the screen later.
-
 ## Changes to what is there
 
-- the image is loaded at `$10000`, not 0: `mp32img --load $10000` and `forth.cfg`.
+- the image stays at 0, as `os.s`: `forth.cfg` links it there, `mp32img` without
+  `--load`.
 - r30 and r31 are reserved (GP, UP): no handler and no code word may use them for
-  anything else.
+  anything else (`os.s`'s handlers use them for `frames` and the video registers).
 - the LISP heap of `os.s` (1 MB .. 7.5 MB) moves to the free memory above the
   dictionary.
