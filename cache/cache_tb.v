@@ -10,6 +10,14 @@
 // the time. Every read is checked against what was written. Then it sits idle for
 // 100 us (the refresh must go on), and reads back everything it ever wrote.
 // The model checks the SDRAM's timing and the refresh all along.
+//
+// Region 3 (0x7F0000) is in the write-through region. After the idle time the SDRAM
+// itself (the model's array, what the video unit would read) must hold everything
+// written there. Then the write-combining buffer on its own:
+//   - 4 KB written byte by byte, at 0x7E0000: exactly one burst for each 16 bytes,
+//     and the SDRAM holds it all WC_TICKS ticks later;
+//   - one word written again and again for 4 * WC_TICKS ticks: it must still reach
+//     the SDRAM every WC_TICKS ticks or so (at least 3 bursts), and the last value too.
 
 `timescale 1ns/1ps
 
@@ -115,7 +123,28 @@ module cache_tb;
         end
     endtask
 
-    integer op, gap, r_known;
+    // The model's word for a byte address (see sdram.v: row, bank, column)
+    function [20:0] chip_index(input [22:0] a);
+        chip_index = {a[11:10], a[22:12], a[9:2]};
+    endfunction
+
+    task check_chip(input [22:0] a, input [31:0] want, input [31:0] mask);
+        begin
+            if ((chip.mem[chip_index(a)] & mask) !== (want & mask)) begin
+                errors = errors + 1;
+                if (errors <= 20)
+                    $display("%t SDRAM STALE at %h: holds %h, expected %h (mask %h)",
+                             $realtime, a, chip.mem[chip_index(a)], want, mask);
+            end
+        end
+    endtask
+
+    task wait_ticks(input integer n);
+        repeat (n) @(posedge clk);
+    endtask
+
+    integer op, gap, r_known, wr0, c0, i;
+    reg [31:0] dummy, mask;
     reg [1:0]  r;
     reg [15:2] w;
     reg [3:0]  be;
@@ -163,6 +192,51 @@ module cache_tb;
                 r_known = r_known + 1;
             end
         $display("read back %0d words", r_known);
+
+        // ---- the write-through region in the SDRAM itself
+        r_known = 0;
+        for (k = 3 * 16384; k < 65536; k = k + 1)
+            if (ref_known[k] != 0) begin
+                mask = {{8{ref_known[k][3]}}, {8{ref_known[k][2]}},
+                        {8{ref_known[k][1]}}, {8{ref_known[k][0]}}};
+                check_chip(region_base(3) + {k[13:0], 2'b00}, ref_word[k], mask);
+                r_known = r_known + 1;
+            end
+        $display("write-through region: %0d words checked in the SDRAM", r_known);
+
+        // ---- write-combining: 4 KB byte by byte
+        wait_ticks(dut.WC_TICKS + 50);
+        wr0 = chip.writes; c0 = cycles;
+        for (i = 0; i < 4096; i = i + 1)
+            access(1, 23'h7E0000 + i, 4'b0001 << i[1:0], {4{i[7:0] ^ 8'h5A}}, dummy);
+        $display("write-combining: 4096 byte writes in %0d ticks, %0d line writes",
+                 cycles - c0, chip.writes - wr0);
+        if (chip.writes - wr0 > 256) begin          // the last line may still be pending
+            errors = errors + 1;
+            $display("FAIL: more than one burst for 16 bytes");
+        end
+        wait_ticks(dut.WC_TICKS + 50);
+        if (chip.writes - wr0 != 256) begin
+            errors = errors + 1;
+            $display("FAIL: %0d line writes, expected 256", chip.writes - wr0);
+        end
+        for (i = 0; i < 4096; i = i + 4)
+            check_chip(23'h7E0000 + i, {4{i[7:0] ^ 8'h5A}} ^ 32'h03020100, 32'hFFFFFFFF);
+
+        // ---- write-combining: one word, again and again
+        wr0 = chip.writes; c0 = cycles; i = 0;
+        while (cycles - c0 < 4 * dut.WC_TICKS) begin
+            access(1, 23'h7E2000, 4'b1111, i, dummy);
+            i = i + 1;
+        end
+        $display("write-combining: %0d writes to one word, %0d line writes",
+                 i, chip.writes - wr0);
+        if (chip.writes - wr0 < 3) begin
+            errors = errors + 1;
+            $display("FAIL: a line written again and again stays out of the SDRAM");
+        end
+        wait_ticks(dut.WC_TICKS + 50);
+        check_chip(23'h7E2000, i - 1, 32'hFFFFFFFF);
 
         $display("SDRAM: %0d line reads, %0d line writes, %0d refreshes, %0d timing errors",
                  chip.reads, chip.writes, chip.refreshes, chip.errors);

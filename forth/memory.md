@@ -205,6 +205,11 @@ L and HLIM are the same for all tasks; the tasks do not interrupt each other
 | `0079_0000 - 007D_AFFF` | the pixels: 480 lines of 640 bytes |
 | `007D_B000 - 007F_FFFF` | free (148 KB) |
 
+The cache keeps the last line written here in its write-combining buffer (`cache.v`)
+and sends it to the SDRAM when another line is written, before any miss, or at the
+latest 512 ticks (about 12 us) later. Bytes stored one after the other cost one SDRAM
+burst per 16 bytes; the picture shows them less than a line of the screen later.
+
 ## Changes to what is there
 
 - the image is loaded at `$10000`, not 0: `mp32img --load $10000` and `forth.cfg`.

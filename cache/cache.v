@@ -41,14 +41,29 @@
 //
 // ---------------------------------------------------------------- write-through
 // The video unit reads its pictures and text straight from the SDRAM, so what the
-// processor writes there must not wait in the cache. Writes to WT_FROM - WT_TO (byte
-// addresses, whole lines: the low 4 bits do not count) go through: the line is
-// written into the cache, kept clean, and written to the SDRAM at once.
-//   - a write hit there:   cpu_ready once the SDRAM has the line, about 8 ticks
-//   - a write miss there:  the line is read first, as any miss, then as a hit
+// processor writes there must not wait in the cache for long. Writes to WT_FROM - WT_TO
+// (byte addresses, whole lines: the low 4 bits do not count) go into the cache, which
+// keeps the line clean, and into the write-combining buffer: one line, a copy of the
+// cached one, "pending". It goes to the SDRAM (one burst of 16 bytes)
+//   - when the processor writes to another line of the region: that line waits for it,
+//   - before any miss: the cache reads nothing from the SDRAM with a line pending,
+//   - at the latest WC_TICKS ticks after it became pending (counted from the first
+//     write, not the last: a loop on one byte cannot keep it out of the SDRAM).
+// So 16 bytes written one after the other cost one burst, not 16, and the video unit
+// sees what was written at the latest about WC_TICKS ticks later (plus a burst of the
+// video unit and a refresh that may be in the way): 512 ticks are 12 us at 42 MHz, less
+// than one line of the screen. A byte loop may take up to WC_TICKS / 16 ticks a byte
+// and still fill each line with one burst.
+//   - a write hit there:   cpu_ready as any hit, 1 tick after cpu_sel; if another
+//                          line is pending, it goes out first (about 8 ticks more)
+//   - a write miss there:  the pending line out, the line read, then as a hit
 // Reads there are as anywhere else. By default the region is the top 512 KB,
 // 0x780000 - 0x7FFFFF, where the video unit's screen goes (326,400 bytes).
 // Set WT_FROM > WT_TO for no such region.
+//
+// The pending line is always in the cache too, the same: it is clean there, so it is
+// never written back on its own, and it cannot be thrown out (that takes a miss, and a
+// miss writes the pending line first). So reads of it, and fetches, see the new bytes.
 //
 // ---------------------------------------------------------------- the video port
 // vid_req, vid_addr, vid_count, vid_word, vid_valid and vid_ack go straight through to
@@ -68,6 +83,7 @@ module cache #(
     parameter REFRESH_NS = 7800,       // see sdram.v
     parameter [22:0] WT_FROM = 23'h780000,   // the write-through region, see above
     parameter [22:0] WT_TO   = 23'h7FFFFF,
+    parameter WC_TICKS   = 512,        // a pending line goes out at the latest this late (< 1024)
     parameter EXT_CLK    = 0,          // see sdram.v
     parameter RD_NEG     = 0           // see sdram.v
 ) (
@@ -157,6 +173,18 @@ module cache #(
     // Is the processor's address in the write-through region?
     wire through = (cpu_addr[22:4] >= WT_FROM[22:4]) & (cpu_addr[22:4] <= WT_TO[22:4]);
 
+    // ---- the write-combining buffer: one line of the region, pending (see above)
+    reg         wc_valid;
+    reg [22:4]  wc_addr;
+    reg [127:0] wc_line;
+    reg [9:0]   wc_timer;              // ticks left until it must go out
+    wire        wc_same  = wc_valid & (wc_addr == {tag, index});
+    wire        wc_other = wc_valid & ~wc_same;
+    wire        wc_due   = wc_valid & (wc_timer == 0);
+
+    // A write hit in the region that must wait for the pending line of another
+    wire        wt_wait  = cpu_we & through & wc_other;
+
     // The line with the processor's bytes written into it
     function [31:0] merge(input [31:0] old, input [31:0] new, input [3:0] be);
         merge = {be[3] ? new[31:24] : old[31:24], be[2] ? new[23:16] : old[23:16],
@@ -176,14 +204,13 @@ module cache #(
                      S_CHECK = 3'd2,    // hit or miss?
                      S_EVICT = 3'd3,    // the old, dirty line goes back to the SDRAM
                      S_FILL  = 3'd4,    // the new line comes in from the SDRAM
-                     S_WRITE = 3'd5,    // write-through: the line goes to the SDRAM
-                     S_DONE  = 3'd6;    // write-through: done, cpu_ready
+                     S_FLUSH = 3'd5;    // the pending line goes to the SDRAM
 
     reg [2:0]            state;
     reg [INDEX_BITS-1:0] clear_index;
 
     wire   hit_now   = (state == S_CHECK) & cpu_sel & hit;
-    assign cpu_ready = (hit_now & ~(cpu_we & through)) | ((state == S_DONE) & cpu_sel);
+    assign cpu_ready = hit_now & ~wt_wait;
     assign cpu_rline = line_q;
     assign cpu_rdata = (word == 2'd0) ? line_q[31:0]  : (word == 2'd1) ? line_q[63:32] :
                        (word == 2'd2) ? line_q[95:64] :                   line_q[127:96];
@@ -207,7 +234,7 @@ module cache #(
             tag_wd = 0;
         end
         S_CHECK:                           // a write hit: the bytes in, the line dirty
-            if (cpu_sel & hit & cpu_we) begin   // (clean if it goes through)
+            if (cpu_sel & hit & cpu_we & ~wt_wait) begin   // (clean if it goes through)
                 data_we = 1'b1;
                 tag_we  = 1'b1;
                 data_wd = merged;
@@ -236,57 +263,78 @@ module cache #(
             clear_index <= 0;
             mem_req     <= 1'b0;
             mem_we      <= 1'b0;
-        end else case (state)
-        S_CLEAR: begin
-            clear_index <= clear_index + 1'b1;
-            if (clear_index == LINES - 1)
-                state <= S_IDLE;
-        end
-        S_IDLE:
-            if (cpu_sel)
-                state <= S_CHECK;
-        S_CHECK:
-            if (!cpu_sel | (hit & ~(cpu_we & through)))
-                state <= S_IDLE;           // done (or the processor gave up)
-            else if (hit) begin            // a write hit that goes through
-                mem_req    <= 1'b1;
-                mem_we     <= 1'b1;
-                mem_addr   <= {tag, index};
-                evict_line <= merged;
-                state      <= S_WRITE;
-            end else begin
-                mem_req <= 1'b1;
-                if (q_valid & q_dirty) begin
+            wc_valid    <= 1'b0;
+            wc_timer    <= 0;
+        end else begin
+            if (wc_valid && wc_timer != 0)
+                wc_timer <= wc_timer - 1'b1;
+
+            case (state)
+            S_CLEAR: begin
+                clear_index <= clear_index + 1'b1;
+                if (clear_index == LINES - 1)
+                    state <= S_IDLE;
+            end
+            S_IDLE:
+                if (wc_due) begin              // the pending line has waited long enough
+                    mem_req    <= 1'b1;
                     mem_we     <= 1'b1;
-                    mem_addr   <= {q_tag, index};
-                    evict_line <= line_q;
-                    state      <= S_EVICT;
-                end else begin
+                    mem_addr   <= wc_addr;
+                    evict_line <= wc_line;
+                    state      <= S_FLUSH;
+                end else if (cpu_sel)
+                    state <= S_CHECK;
+            S_CHECK:
+                if (!cpu_sel)
+                    state <= S_IDLE;           // the processor gave up
+                else if ((hit & ~cpu_we) | (hit & cpu_we & ~through))
+                    state <= S_IDLE;           // done
+                else if (hit & ~wt_wait) begin // a write in the region: into the buffer
+                    wc_line  <= merged;
+                    wc_addr  <= {tag, index};
+                    wc_valid <= 1'b1;
+                    if (!wc_valid)
+                        wc_timer <= WC_TICKS;
+                    state    <= S_IDLE;
+                end else if (wc_valid) begin   // another line pending, or a miss: the
+                    mem_req    <= 1'b1;        // pending line out first, then again
+                    mem_we     <= 1'b1;
+                    mem_addr   <= wc_addr;
+                    evict_line <= wc_line;
+                    state      <= S_FLUSH;
+                end else begin                 // a miss
+                    mem_req <= 1'b1;
+                    if (q_valid & q_dirty) begin
+                        mem_we     <= 1'b1;
+                        mem_addr   <= {q_tag, index};
+                        evict_line <= line_q;
+                        state      <= S_EVICT;
+                    end else begin
+                        mem_we   <= 1'b0;
+                        mem_addr <= {tag, index};
+                        state    <= S_FILL;
+                    end
+                end
+            S_EVICT:
+                if (mem_ack) begin             // the old line is out; now read the new one
                     mem_we   <= 1'b0;
                     mem_addr <= {tag, index};
                     state    <= S_FILL;
                 end
-            end
-        S_EVICT:
-            if (mem_ack) begin             // the old line is out; now read the new one
-                mem_we   <= 1'b0;
-                mem_addr <= {tag, index};
-                state    <= S_FILL;
-            end
-        S_FILL:
-            if (mem_ack) begin             // the line is written into the memories in
-                mem_req <= 1'b0;           // this tick; read it again, as a hit
-                state   <= S_IDLE;
-            end
-        S_WRITE:
-            if (mem_ack) begin
-                mem_req <= 1'b0;
-                state   <= S_DONE;
-            end
-        S_DONE:
-            state <= S_IDLE;
-        default:
-            state <= S_IDLE;
-        endcase
+            S_FILL:
+                if (mem_ack) begin             // the line is written into the memories in
+                    mem_req <= 1'b0;           // this tick; read it again, as a hit
+                    state   <= S_IDLE;
+                end
+            S_FLUSH:
+                if (mem_ack) begin             // the pending line is out; the access (if
+                    mem_req  <= 1'b0;          // any) starts again
+                    wc_valid <= 1'b0;
+                    state    <= S_IDLE;
+                end
+            default:
+                state <= S_IDLE;
+            endcase
+        end
     end
 endmodule
