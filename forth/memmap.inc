@@ -117,3 +117,16 @@ U_KEY       = $8C - $80         ; 'KEY:  the task's KEY  (vectored, for more ter
 U_EMIT      = $90 - $80         ; 'EMIT: the task's EMIT
 U_NAME      = $94 - $80         ; the task's name (its header), for .TASKS
 U_FREE      = $98 - $80         ; from here: USER variables (USER allots them)
+
+; ---------------------------------------------------------------- the header cell
+; at xt - 4 (dictionary.md): LEN 31..27, INL 26..23, LINK 22..4, FLAGS 3..0
+H_LEN_SHIFT = 27                ; the name's length, 0 .. 31
+H_INL_SHIFT = 23                ; inline this many bytes (0: call)
+H_INL_MASK  = $0F << 23
+H_LINK_MASK = $7FFFF0           ; the next older word's xt
+F_IMMEDIATE = 1
+F_COMPILE   = 2                 ; compile only
+F_HIDDEN    = 4                 ; being defined: not found
+F_CREATED   = 8                 ; a body at xt + 16
+BODY        = 16                ; >BODY: xt + BODY
+NAME_MAX    = 31
