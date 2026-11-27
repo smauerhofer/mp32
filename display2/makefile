@@ -7,8 +7,13 @@
 #                      interrupt)
 #   make test-clocks   run it at 42 (the processor's clock), 54 and 100 MHz
 #   make size          synthesize the video unit alone and count what it takes
-#   make data          make palette.hex, fonts.hex, text.hex, pixels.hex and
-#                      modes.hex again
+#   make data          make palette.hex, fonts.hex, petscii.hex, text.hex,
+#                      pixels.hex and modes.hex again
+#
+# The fonts: petscii.hex is what the computer starts with (font 0 PETSCII, fonts
+# 1 .. 3 empty; tools/make_petscii.py). fonts.hex (normal, bold, italic, underlined
+# from font.hex, tools/make_fonts.py) is kept for this test bench and for the SD card
+# (../computer: make fonts-sd), from where FORTH can load them.
 #   make clean
 #
 # The test bench needs the cache, the SDRAM controller and the SDRAM model from
@@ -57,10 +62,13 @@ palette.hex: tools/make_palette.py
 fonts.hex: font.hex tools/make_fonts.py
 	python3 tools/make_fonts.py font.hex $@
 
+petscii.hex: font.hex tools/make_petscii.py
+	python3 tools/make_petscii.py font.hex $@
+
 text.hex pixels.hex modes.hex: tools/make_demo.py
 	python3 tools/make_demo.py text.hex pixels.hex modes.hex
 
-data: palette.hex fonts.hex text.hex pixels.hex modes.hex
+data: palette.hex fonts.hex petscii.hex text.hex pixels.hex modes.hex
 
 size: video.v
 	yosys -p "read_verilog $^; synth_gowin -top video; stat"

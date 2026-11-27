@@ -51,10 +51,16 @@ TERM_BUFS   = 1024              ; TERMINAL only: TIB 256, WORD 256, HOLD 256, PA
 TASK_RS     = 1024              ; return stack, 256 cells (64 of them headroom)
 TASK_PS     = 1024              ; parameter stack, 256 cells
 
+; ---------------------------------------------------------------- the SD card
+FONT_LBA    = 16384             ; the fonts (fonts.bin): font n in blocks FONT_LBA + 4n ..
+
 ; ---------------------------------------------------------------- the screen
 TEXT        = $780000           ; 60 rows of 80 cells
 TEXT_END    = TEXT + 60 * 80 * 4
 PIXELS      = $790000           ; 480 lines of 640 bytes
+FONTRAM     = $FFFF8000         ; font f at FONTRAM + 2048 * f; font 0 PETSCII
+INK_GREEN   = 82                ; $5FFF00, the PET's green
+PAPER_BLACK = 0
 
 ; ---------------------------------------------------------------- the globals (r30)
 G_INHEAD    = $00 - $80         ; the input queue: the handlers write here

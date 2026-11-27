@@ -206,6 +206,26 @@ L and HLIM are the same for all tasks; the tasks do not interrupt each other
 | `0079_0000 - 007D_AFFF` | the pixels: 480 lines of 640 bytes |
 | `007D_B000 - 007F_FFFF` | free (148 KB) |
 
+## The SD card
+
+Raw blocks of 512 bytes, no file system yet:
+
+| block | what |
+|---|---|
+| 0 .. | the boot image (`mp32img`), if the card is a boot method |
+| 16384 .. 16399 (`FONT_LBA`) | the fonts: `fonts.bin` (`../computer`: `make fonts-sd`), font n in blocks 16384 + 4n .. + 3 |
+
+The screen starts with font 0, PETSCII (`../computer/README.md`, the fonts); fonts 1
+.. 3 of the font RAM are empty. A FORTH word loads one from the card:
+
+    FONT ( n f -- )      font n of the card into font f of the font RAM
+                         (4 blocks from FONT_LBA + 4n to $FFFF_8000 + 2048 f)
+
+    1 1 FONT            \ bold (the card's font 1) into font 1
+    0 0 FONT            \ the old normal font instead of PETSCII
+
+A cell shows font f with f in its byte 1 (`COLOURS`, the globals).
+
 ## Changes to what is there
 
 - the image stays at 0, as `os.s`: `forth.cfg` links it there, `mp32img` without

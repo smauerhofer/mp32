@@ -2,9 +2,10 @@
 ; boot program. The boot loader (boot.s) loads it from the flash, the microSD card or
 ; the serial port into the SDRAM at 0 and starts it (os.cfg, mp32img).
 ;
-; It sets up the stacks and the LISP heap, clears the screen (blue, as a C64), writes
-; "mp32 ready" on the screen and to the serial port, beeps, and then echoes every byte that
-; comes in on the serial port, to the serial port and to the screen. The LEDs count
+; It sets up the stacks and the LISP heap, leaves what the boot loader wrote on the
+; screen (green on black, as a PET) and goes on at row 8: it writes "mp32 ready" there
+; and to the serial port, beeps, and then echoes every byte that comes in on the
+; serial port, to the serial port and to the screen. The LEDs count
 ; the bytes. A CR starts a new line on the screen; when the screen is full it starts
 ; at the top again, clearing each line as it gets there.
 ;
@@ -40,11 +41,12 @@
 ;   $FFFF_0400  the interrupt controller (cpu/irqc.v): +4 MASK, +12 EOI
 ;   $FFFF_A000  video registers ($FFFF_A020 text_base, $FFFF_A024 pixel_base,
 ;               $FFFF_A02C IRQ_CTRL, $FFFF_A030 IRQ_STATUS)
-;   $0078_0000  the screen's text: 60 rows of 80 words (code, font, paper, ink)
+;   $0078_0000  the screen's text: 60 rows of 80 words (code, font, paper, ink); the
+;               code is the PET's screen code (font 0, ../display2/tools/make_petscii.py)
 ;
 ; Registers kept across the whole program:
 ;   r10 UART  r11 text  r12 column * 4  r13 LEDs  r14 the row's address
-;   r16 the colors of a character (ink 14, paper 6, font 0)  r17 320 (a row)
+;   r16 the colors of a character (ink 82, paper 0, font 0)  r17 320 (a row)
 ;   r18 the end of the text  r9 $100  r19 where the main loop reads the ring buffer
 ; and the handlers' own:
 ;   r24 the ring buffer  r25 where the handler writes into it  r28 255
@@ -155,7 +157,7 @@ start:  LEA     pstack_top              ; the stacks: in the SDRAM (BSS)
         MOVR    r17, T
         LIT     $100
         MOVR    r9, T
-        LIT     $0E06                   ; ink 14 (light blue), paper 6 (blue), font 0
+        LIT     $5200                   ; ink 82 (green), paper 0 (black), font 0
         LSLI    16
         MOVR    r16, T
 
@@ -191,7 +193,10 @@ start:  LEA     pstack_top              ; the stacks: in the SDRAM (BSS)
         STR3    r1, r29, 4              ; the controller: MASK lines 1 and 3
         SEI
 
-        CALL    cls
+        LIT     TEXT + 8 * 320          ; the loader's lines stay: start at row 8,
+        MOVR    r14, T                  ; below them (cls would clear them all)
+        MOVI2   r12, 0
+        CALL    clear_row
         LEA     banner
         MOVR    r6, T
         CALL    puts
@@ -218,7 +223,13 @@ putc:   STR     r1, r10                 ; the UART (waits while its queue is ful
         MOVI2   r3, 10
         CMP2    r1, r3
         B       EQ, putc_done           ; LF: only the serial port
-        OR3     r2, r1, r16             ; the character with its colors
+        MOV2    r2, r1                  ; ASCII to the PET's screen code: below $40 the
+        MOVI2   r3, $40                 ; same, from $40 on AND $1F (@ A .. Z, and a .. z
+        CMP2    r2, r3                  ; as capitals)
+        B       LO, @code
+        MOVI2   r3, $1F
+        AND2    r2, r3
+@code:  OR2     r2, r16                 ; the character with its colors
         ADD3    r3, r14, r12            ; where it goes
         STR     r2, r3
         INCWR   r12                     ; the next column

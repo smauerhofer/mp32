@@ -6,22 +6,32 @@
 //
 // The clocks as on the board: 42 MHz for the processor, 25.2 MHz for the pixels. The
 // serial port runs at 42 MHz / 16 here (UART_DIV = 16), so the bytes do not take long.
-// The test bench plays the PC on the serial port. Three boots, each from reset:
+// The test bench plays the PC on the serial port. Six boots, each from reset. In each
+// the loader's phases show on the LEDs: LED0 (1, with a short beep: LEN 4688), LED1
+// (3), LED2 (7) - or a stop, with an LED blinking at 1 Hz and long beeps (LEN 23438).
+// Half a second is long to simulate: for the blinking the test bench moves TICKS on
+// by 21,000,000 at a time.
 //
 //   1. from the flash: the image at $400000. Then the operating system's own checks:
-//      "mp32 ready" on the serial port and the screen (row 0, ink 14, paper 6), the
+//      "mp32 ready" on the serial port and the screen (row 8, ink 82, paper 0), the
 //      echo of what it is sent ("hi" and a CR) on both, the LEDs counting the bytes
 //      (1 + 3 = 4), the beep (+4000 for 53 samples, then -4000, on both channels),
 //      VEC = 0. The echo runs on the serial port's interrupt, through the vector table
 //      at 0.
 //   2. from the card: the flash erased ("no image"), the card holds the image from
 //      block 0 (SDHC: start, ACMD41 busy at first, CMD58, CMD17 block after block).
-//   3. from the serial port: the flash holds the image with one byte of its payload
-//      changed ("bad checksum"), there is no card ("no card"); the test bench sends
-//      three bytes of noise, then the image.
+//   3. from the serial port: the flash erased, there is no card ("no card"); the
+//      test bench sends three bytes of noise, then the image. Halfway, TICKS moves on
+//      by a quarter of a second: LED2 goes off (it blinks at 2 Hz while loading).
 //   4. from an older card, SDSC: byte addresses, CMD16; the flash erased.
+//   5. phase 3 fails: the flash holds the image with one byte of its payload changed:
+//      a good header, so the flash is the boot method, but "bad checksum": LED2 blinks
+//      (LED0 and LED1 on), three long beeps, then only the blinking.
+//   6. phase 2 fails: the flash erased, no card, and the serial port sends a header
+//      with a byte changed ("serial port: bad header"): LED1 blinks (LED0 on), two
+//      long beeps.
 //
-// Before boots 2 and 3 the start of the SDRAM is cleared, so the operating system
+// Before boots 2 to 6 the start of the SDRAM is cleared, so the operating system
 // can only run if it was loaded again. At the end: no SDRAM timing errors, and the
 // video unit fetched lines.
 //
@@ -214,10 +224,12 @@ module computer_tb;
 
     task check_row(input integer r, input [8*16-1:0] text, input integer len);
         integer c;
+        reg [7:0]  ch;                  // ASCII: the screen shows the PET's screen code
         reg [31:0] want;
         begin
             for (c = 0; c < 80; c = c + 1) begin
-                want = {8'd14, 8'd6, 8'd0, (c < len) ? text[8*(len-1-c) +: 8] : 8'h20};
+                ch   = (c < len) ? text[8*(len-1-c) +: 8] : 8'h20;
+                want = {8'd82, 8'd0, 8'd0, (ch >= 8'h40) ? (ch & 8'h1F) : ch};
                 if (screen(r, c) !== want) begin
                     errors = errors + 1;
                     if (errors <= 20)
@@ -231,6 +243,68 @@ module computer_tb;
     integer fetches = 0;
     always @(posedge clk) if (dut.vmem_ack) fetches = fetches + 1;
 
+    // ---------------------------------------------------------------- the phases
+    // the LEDs as they change, and the tone's lengths as they are written, since the
+    // last reset
+    reg [5:0]  ledlog [0:63];
+    integer    nled = 0, nbeep = 0;
+    reg [23:0] beeplog [0:15];
+    always @(leds) if (nled < 64) begin ledlog[nled] = leds; nled = nled + 1; end
+    always @(posedge clk)
+        if (dut.sound.wr_reg && dut.sound.reg_no == dut.sound.R_LEN && nbeep < 16) begin
+            beeplog[nbeep] = dut.io_wdata[23:0];
+            nbeep = nbeep + 1;
+        end
+
+    // the first n LED values since the reset are a, b, c (n = 2 or 3)
+    task check_phases(input integer n, input [5:0] a, input [5:0] b, input [5:0] c);
+        begin
+            if (nled < n || ledlog[0] !== a || ledlog[1] !== b || (n > 2 && ledlog[2] !== c)) begin
+                errors = errors + 1;
+                $display("FAIL: the LEDs went %0d, %0d, %0d (of %0d changes), expected %0d, %0d, %0d",
+                         ledlog[0], ledlog[1], ledlog[2], nled, a, b, n > 2 ? c : 6'd0);
+            end
+            if (nbeep < 1 || beeplog[0] !== 24'd4688) fail("no short beep in phase 1");
+        end
+    endtask
+
+    // half a second on: TICKS moved on, then a little time for the loader
+    task half_second;
+        begin
+            @(negedge clk);
+            dut.io.ticks = dut.io.ticks + 32'd21_000_000;
+            #30_000;
+        end
+    endtask
+
+    // the stop: LED blink blinks at 1 Hz, steady stays on, with beeps long beeps
+    task check_stop(input [5:0] steady, input [5:0] blink, input integer beeps,
+                    input [8*12-1:0] what);
+        integer k;
+        begin
+            #30_000;
+            for (k = 0; k < beeps + 2; k = k + 1) begin
+                if (leds !== (steady | blink)) begin
+                    errors = errors + 1;
+                    $display("FAIL: %0s: LEDs %b while on, expected %b", what, leds, steady | blink);
+                end
+                half_second;
+                if (leds !== steady) begin
+                    errors = errors + 1;
+                    $display("FAIL: %0s: LEDs %b while off, expected %b", what, leds, steady);
+                end
+                half_second;
+            end
+            // the short beep, then the long ones
+            if (nbeep != 1 + beeps) begin
+                errors = errors + 1;
+                $display("FAIL: %0s: %0d long beeps, expected %0d", what, nbeep - 1, beeps);
+            end
+            for (k = 1; k < nbeep; k = k + 1)
+                if (beeplog[k] !== 24'd23438) fail("a long beep is not 0.5 s");
+        end
+    endtask
+
     // ---------------------------------------------------------------- the boots
     integer reset_errors = 0, e0;
     task restart;
@@ -242,6 +316,7 @@ module computer_tb;
             repeat (8) @(posedge clk);
             for (a = 0; a < 16384; a = a + 4)       // no operating system left over
                 chip.mem[chip_index(a)] = 32'h0;
+            nled = 0; nbeep = 0;
             reset = 0;
             #250_000;                               // the power-up: 200 us, 8 refreshes
             reset_errors = reset_errors + (chip.errors - e0);
@@ -266,23 +341,26 @@ module computer_tb;
 
         // ================================================ 1. from the flash
         t0 = $time;
+        nled = 0; nbeep = 0;
         reset = 0;
         expect({"mp32 boot", CRLF, "flash: "}, 10);
         expect_load(5);
+        check_phases(3, 6'd1, 6'd3, 6'd7);
         mark1 = mark;
         $display("1. from the flash: \"mp32 ready\" after %0.2f ms", ($time - t0) / 1.0e6);
         if (dut.processor.ex.vec_r !== 22'd0) fail("VEC is not 0");
 
-        // the screen, row 0 (the operating system cleared what the loader wrote)
+        // the screen: the loader's first line stays, the operating system at row 8
         #2000;
-        check_row(0, "mp32 ready", 10);
-        check_row(1, "", 0);
+        check_row(0, "mp32 boot", 9);
+        check_row(8, "mp32 ready", 10);
+        check_row(9, "", 0);
 
         // the echo, on the serial port's interrupt (vector 19, at 0 + 76)
         send("h"); send("i"); send(8'd13);
         expect({"hi", 8'd13}, 5);
         #100000;                                // the CR clears the next row first
-        check_row(1, "hi", 2);
+        check_row(9, "hi", 2);
         if (leds !== 6'd4) begin
             errors = errors + 1;
             $display("FAIL: LEDs %0d, expected 4", leds);
@@ -304,23 +382,30 @@ module computer_tb;
         restart;
         expect({"mp32 boot", CRLF, "flash: no image", CRLF, "sd card: "}, 10);
         expect_load(20);
+        check_phases(3, 6'd1, 6'd3, 6'd7);
         $display("2. from the card: \"mp32 ready\" after %0.2f ms (%0d commands, %0d blocks)",
                  ($time - t0) / 1.0e6, card.commands, card.blocks_read);
         if (card.blocks_read != (img_size + 511) / 512) fail("the card: not as many blocks as the image has");
 
         // ================================================ 3. from the serial port
-        flash.load("os.img");
-        flash.mem[100] = flash.mem[100] ^ 8'h01;    // one bit of the payload
         card.present = 0;
         t0 = $time;
         restart;
-        expect({"mp32 boot", CRLF, "flash: loading "}, 10);
-        expect({" bytes to 00000000 bad checksum", CRLF}, 10);
+        expect({"mp32 boot", CRLF, "flash: no image", CRLF}, 10);
         expect({"sd card: no card", CRLF}, 10);
         expect({"serial port: send the image", CRLF}, 10);
         send(8'h00); send("m"); send("p");          // noise first
-        for (i = 0; i < img_size; i = i + 1) send(img[i]);
+        for (i = 0; i < img_size; i = i + 1) begin
+            if (i == img_size / 2) begin            // a quarter of a second into the load
+                @(negedge clk);
+                dut.io.ticks = dut.io.ticks + 32'd10_500_000;
+            end
+            send(img[i]);
+        end
         expect_load(5);
+        check_phases(3, 6'd1, 6'd3, 6'd7);
+        // LED2 blinked once (off, then on) during the load, and stayed on
+        if (nled < 5 || ledlog[3] !== 6'd3 || ledlog[4] !== 6'd7) fail("LED2 did not blink while loading");
         $display("3. from the serial port: \"mp32 ready\" after %0.2f ms (%0d bytes sent)",
                  ($time - t0) / 1.0e6, img_size + 3);
 
@@ -333,9 +418,34 @@ module computer_tb;
         restart;
         expect({"mp32 boot", CRLF, "flash: no image", CRLF, "sd card: "}, 10);
         expect_load(20);
+        check_phases(3, 6'd1, 6'd3, 6'd7);
         $display("4. from an SDSC card: \"mp32 ready\" after %0.2f ms (%0d blocks)",
                  ($time - t0) / 1.0e6, card.blocks_read);
         if (card.blocks_read != (img_size + 511) / 512) fail("the SDSC card: not as many blocks as the image has");
+
+        // ================================================ 5. phase 3 fails
+        flash.load("os.img");
+        flash.mem[100] = flash.mem[100] ^ 8'h01;    // one bit of the payload
+        card.present = 0;
+        t0 = $time;
+        restart;
+        expect({"mp32 boot", CRLF, "flash: loading "}, 10);
+        expect({" bytes to 00000000 bad checksum", CRLF}, 10);
+        check_phases(3, 6'd1, 6'd3, 6'd7);
+        check_stop(6'b000011, 6'b000100, 3, "phase 3");
+        if (find("sd card", 7, mark) >= 0) fail("phase 3 failed, but it went on to the card");
+        $display("5. phase 3 failed: LED2 blinking, %0d long beeps", nbeep - 1);
+
+        // ================================================ 6. phase 2 fails
+        flash.erase;
+        t0 = $time;
+        restart;
+        expect({"serial port: send the image", CRLF}, 10);
+        for (i = 0; i < 32; i = i + 1) send((i == 13) ? img[i] ^ 8'h01 : img[i]);
+        expect({"serial port: bad header", CRLF}, 5);
+        check_phases(2, 6'd1, 6'd3, 6'd0);
+        check_stop(6'b000001, 6'b000010, 2, "phase 2");
+        $display("6. phase 2 failed: LED1 blinking, %0d long beeps", nbeep - 1);
 
         // ================================================ the rest
         if (chip.errors != reset_errors) begin

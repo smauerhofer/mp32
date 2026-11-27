@@ -2,23 +2,38 @@
 ; with the FPGA: the linker writes build/boot.hex for BRAM_INIT). The processor starts
 ; here after reset.
 ;
-; It loads the operating system into the SDRAM and starts it. It looks for an image in
-; three places, in this order, and takes the first good one:
+; It loads the operating system into the SDRAM and starts it, in four phases. The
+; LEDs and the speaker say how far it got (LED0 is the one nearest the USB-C port):
 ;
-;   1. the SPI flash, at $400000 (the bitstream is at 0; see FLASH_IMAGE)
-;   2. the microSD card, from block 0 (the raw card, no file system; see SD_LBA)
-;   3. the serial port: it waits for an image to come, as long as it takes
+;   0. all six LEDs off
+;   1. initialize the processor: the stacks, the registers, the screen
+;      -> LED0 on, a short beep (0.1 s)
+;   2. find a boot method: the first place that holds an image with a good header,
+;      in this order:
+;        - the SPI flash, at $400000 (the bitstream is at 0; see FLASH_IMAGE)
+;        - the microSD card, from block 0 (the raw card, no file system; SD_LBA)
+;        - the serial port: it waits for an image to come, as long as it takes
+;      -> LED1 on
+;      failed (the image from the serial port has a bad header):
+;      -> LED1 blinks at 1 Hz, 2 long beeps (0.5 s, with the LED), and it stops
+;   3. load the operating system: copy the payload, add its words up
+;      -> LED2 blinks at 2 Hz while it loads, then stays on
+;      failed (a read error, or the sum is wrong):
+;      -> LED2 blinks at 1 Hz, 3 long beeps, and it stops
+;   4. jump to the operating system (LED0 .. LED2 stay on until it changes them)
+;
+; Once it stopped, only S1 (or a new bitstream) starts it again. A place without an
+; image, or with a bad header, in phase 2 is no failure: the next place is tried.
 ;
 ; The image (made by mp32img, see ../toolchain/src/Mp32.Core/BootImage.cs): a header
 ; of 8 little-endian words, then the payload.
 ;
 ;   +0  "mp32"  +4 load  +8 size  +12 entry  +16 sum  +20 0  +24 0  +28 check
 ;
-; The loader checks the header (the eight words add up to 0; load is 1 KB aligned;
-; size is a multiple of 4, not 0; the payload fits below the screen; entry is in it),
-; copies the payload to load .. load + size - 1, adds its words up and compares them
-; with sum. A bad image is reported on the serial port and the screen, and the next
-; place is tried.
+; A good header: the eight words add up to 0; load is 1 KB aligned; size is a
+; multiple of 4, not 0; the payload fits below the screen; entry is in it. Phase 3
+; copies the payload to load .. load + size - 1 and compares the sum of its words
+; with sum. What happens is reported on the serial port and the screen.
 ;
 ; ---------------------------------------------------------------- the handover
 ; With a good image it waits until the serial port has sent everything, then:
@@ -31,28 +46,32 @@
 ;
 ; Everything else is as the loader left it: the stacks (PSP, RSP) still point into the
 ; block RAM, the card's and the flash's chip selects are off, the screen shows what the
-; loader wrote. The operating system sets up its own stacks first.
+; loader wrote, LED0 .. LED2 are on, the amplifier is on. The operating system sets up
+; its own stacks first.
 ;
 ; The loader does not use interrupts. Its vector table (at $F000_0000, VEC after
 ; reset) only catches what should not happen: an undefined opcode, an exception, an
-; interrupt; each says so and stops. Hold S1 to start again.
+; interrupt; each says so, lights all six LEDs and stops.
 ;
 ; The I/O (see iodec.v):
 ;   $FFFF_0000  UART: +0 DATA (write: send; read: bit 8 = a byte came, bits 7..0 the
 ;               byte), +4 STATUS (bit 2 TXE: all sent)
 ;   $FFFF_0100  microSD (../sdcard/sdcard.v): +0 DATA, +4 DATA32, +8 CTRL, +12 DATA32LE
-;   $FFFF_0200  LEDs: bits 5..0, 1 = lit
+;   $FFFF_0200  +0 LEDS: bits 5..0, 1 = lit; +8 TICKS: the processor's clock, 42 MHz
+;   $FFFF_0300  the sound (../audio/audio.v): +8 CTRL (bit 0 ON), +16 TONE, +20 LEN
 ;   $FFFF_0500  SPI flash: as the microSD
-;   $0078_0000  the screen's text: 60 rows of 80 words (code, font, paper, ink)
+;   $0078_0000  the screen's text: 60 rows of 80 words (code, font, paper, ink); the
+;               code is the PET's screen code (font 0, ../display2/tools/make_petscii.py)
 ;
 ; Registers kept across the whole loader:
 ;   r9  $100  r10 UART  r11 text  r12 column * 4  r13 LEDs  r14 the row's address
-;   r16 the colors of a character (ink 14, paper 6, font 0)  r17 320 (a row)
+;   r16 the colors of a character (ink 82, paper 0, font 0)  r17 320 (a row)
 ;   r18 the end of the text  r20 the source (1 flash, 2 card, 3 serial port)
 ;   r21 the source's SPI device (flash or card)  r22 the card: words left in the block
 ;   r23 the card: the next block  r24 the card: 1 = block addresses (SDHC), 0 = bytes
 ;   r25 -1 (four bytes of $FF to send)  r31 0
-; load uses r7, r8, r15, r19, r26 .. r30; the routines below it use r1 .. r6.
+;   r26 load  r27 size  r28 entry  r29 sum (from the header, phase 2 on)
+; payload uses r0, r7, r8, r15, r19, r30; the routines below it use r1 .. r6.
 
 TEXT        = $780000
 TEXT_END    = $780000 + 60 * 320
@@ -61,7 +80,17 @@ FLASH_IMAGE = $400000                   ; where the image is in the flash
 SD_LBA      = 0                         ; the card's block where the image begins
 SD          = -$FF00                    ; $FFFF_0100: the microSD card
 FLASH       = -$FB00                    ; $FFFF_0500: the SPI flash
+SOUND       = -$FD00                    ; $FFFF_0300: the sound
 SD_SLOW     = 52 << 8                   ; CTRL: DIV 52, 396 kHz (the card's start)
+
+LED0        = 1
+LED1        = 2
+LED2        = 4
+
+HALF_S      = 21000000 >> 8             ; 0.5 s of TICKS, / 256 (LIT, then LSLI 8)
+QUARTER_S   = 10500000 >> 8             ; 0.25 s
+SHORT_BEEP  = 4688                      ; 0.1 s of samples (46,875 a second)
+LONG_BEEP   = 23438                     ; 0.5 s
 
         .code
 ; ---------------------------------------------------------------- the vector table
@@ -86,16 +115,20 @@ halt:   MOVR    r6, T                   ; say so, and stop
         STR     r1, r13
 @stop:  B       A, @stop
 
-; ---------------------------------------------------------------- the start
-start:  LEA     pstack_top              ; the stacks: in the block RAM (BSS)
+; ================================================================ 0. the LEDs off
+start:  LIT     -$FE00                  ; $FFFF_0200: the LEDs
+        MOVR    r13, T
+        MOVI2   r1, 0
+        STR     r1, r13
+
+; ================================================================ 1. the processor
+        LEA     pstack_top              ; the stacks: in the block RAM (BSS)
         MOVR    PSP, T
         LEA     rstack_top
         MOVR    RSP, T
 
         LIT     -$10000                 ; $FFFF_0000: the UART
         MOVR    r10, T
-        LIT     -$FE00                  ; $FFFF_0200: the LEDs
-        MOVR    r13, T
         LIT     TEXT
         MOVR    r11, T
         LIT     TEXT_END
@@ -104,7 +137,7 @@ start:  LEA     pstack_top              ; the stacks: in the block RAM (BSS)
         MOVR    r17, T
         LIT     $100
         MOVR    r9, T
-        LIT     $0E06                   ; ink 14 (light blue), paper 6 (blue), font 0
+        LIT     $5200                   ; ink 82 (green), paper 0 (black), font 0
         LSLI    16
         MOVR    r16, T
         MOVI2   r25, -1
@@ -115,19 +148,30 @@ start:  LEA     pstack_top              ; the stacks: in the block RAM (BSS)
         MOVR    r6, T
         CALL    puts
 
-; ---- 1. the flash
+        MOVI2   r1, LED0
+        STR     r1, r13
+        LIT     SHORT_BEEP
+        MOVR    r1, T
+        CALL    tone                    ; (it plays by itself)
+
+; ================================================================ 2. a boot method
+        MOVI2   r1, LED0 | LED1
+        STR     r1, r13
+
+; ---- the flash
         MOVI2   r20, 1
-        STR     r20, r13                ; LED 0
         LEA     msg_flash
         MOVR    r6, T
         CALL    puts
         CALL    flash_open
-        CALL    load                    ; returns only when it failed
+        CALL    header
+        CMP2    r1, r31
+        B       EQ, phase3
+        CALL    puts                    ; why not (r6)
         CALL    flash_close
 
-; ---- 2. the microSD card
+; ---- the microSD card
         MOVI2   r20, 2
-        STR     r20, r13                ; LED 1
         LEA     msg_sd
         MOVR    r6, T
         CALL    puts
@@ -139,7 +183,10 @@ start:  LEA     pstack_top              ; the stacks: in the block RAM (BSS)
         CALL    sd_block
         CMP2    r1, r31
         B       NE, @read_error
-        CALL    load
+        CALL    header
+        CMP2    r1, r31
+        B       EQ, phase3
+        CALL    puts
         CALL    sd_close
         B       A, @serial
 @read_error:
@@ -153,22 +200,80 @@ start:  LEA     pstack_top              ; the stacks: in the block RAM (BSS)
         MOVR    r6, T
         CALL    puts
 
-; ---- 3. the serial port, until a good image comes
+; ---- the serial port: waits for an image
 @serial:
         MOVI2   r20, 3
-        MOVI2   r1, 4
-        STR     r1, r13                 ; LED 2
         LEA     msg_serial
         MOVR    r6, T
         CALL    puts
         MOV2    r21, r10
-        CALL    load
-        B       A, @serial
+        CALL    header
+        CMP2    r1, r31
+        B       EQ, phase3
+        MOV2    r7, r6                  ; "serial port: bad header"
+        LEA     msg_serial_port
+        MOVR    r6, T
+        CALL    puts
+        MOV2    r6, r7
+        CALL    puts
+        MOVI2   r26, LED0               ; failed: LED1 blinks, 2 long beeps
+        MOVI2   r27, LED1
+        MOVI2   r28, 2
+        B       A, stop
 
-; ================================================================ load
-; Reads an image from the source r20 (opened) and starts it. Returns only when it
-; failed, after saying why.
-load:   CALL    get_magic
+; ================================================================ 3. load it
+phase3: LEA     msg_loading             ; "loading <size> bytes to <load> "
+        MOVR    r6, T
+        CALL    puts
+        MOV2    r6, r27
+        CALL    puthex
+        LEA     msg_bytes_to
+        MOVR    r6, T
+        CALL    puts
+        MOV2    r6, r26
+        CALL    puthex
+        MOVI2   r1, ' '
+        CALL    putc
+        CALL    payload
+        CMP2    r1, r31
+        B       EQ, @loaded
+        CALL    puts                    ; why (r6)
+        CALL    close
+        MOVI2   r26, LED0 | LED1        ; failed: LED2 blinks, 3 long beeps
+        MOVI2   r27, LED2
+        MOVI2   r28, 3
+        B       A, stop
+@loaded:
+        MOVI2   r1, LED0 | LED1 | LED2
+        STR     r1, r13
+
+; ================================================================ 4. start it
+        LEA     msg_start               ; "ok, start at <entry>"
+        MOVR    r6, T
+        CALL    puts
+        MOV2    r6, r28
+        CALL    puthex
+        MOVI2   r1, 13
+        CALL    putc
+        MOVI2   r1, 10
+        CALL    putc
+        CALL    close
+@txe:   LDR3    r1, r10, 4              ; wait until the UART has sent all
+        MOVR    T, r1
+        TTAG    4, 4
+        B       NE, @txe
+        MOVR    T, r26                  ; VEC = load
+        MOVR    VEC, T
+        MOV2    r1, r20                 ; r1 = the source, r2 = the size
+        MOV2    r2, r27
+        MOVR    T, r28
+        MOVR    PC, T                   ; go
+
+; ================================================================ header
+; Phase 2 at the source r20 (opened): its image's header. r1 = 0: a good one, with
+; r26 load, r27 size, r28 entry, r29 sum; the source stands at the payload. Or r1 != 0
+; and r6 = why not: "no image", "bad header", "read error".
+header: CALL    get_magic
         CMP2    r1, r31
         B       EQ, @magic
         LEA     msg_no_image
@@ -207,7 +312,6 @@ load:   CALL    get_magic
         DECR    r19
         B       NE, @hdr
 
-        ; ---- the header's checks
         CMP2    r30, r31                ; the eight words add up to 0
         B       NE, @bad
         LIT     $3FF                    ; load 1 KB aligned
@@ -228,21 +332,20 @@ load:   CALL    get_magic
         B       LO, @bad
         CMP2    r1, r27
         B       HS, @bad
+        MOVI2   r1, 0
+        RET
+@ioerr: LEA     msg_read_error
+        B       A, @fail
+@bad:   LEA     msg_bad_header
+@fail:  MOVR    r6, T
+        MOVI2   r1, 1
+        RET
 
-        LEA     msg_loading             ; "loading <size> bytes to <load> "
-        MOVR    r6, T
-        CALL    puts
-        MOV2    r6, r27
-        CALL    puthex
-        LEA     msg_bytes_to
-        MOVR    r6, T
-        CALL    puts
-        MOV2    r6, r26
-        CALL    puthex
-        MOVI2   r1, ' '
-        CALL    putc
-
-        ; ---- the payload
+; ================================================================ payload
+; Phase 3: the payload from the source to r26, size r27, its words added up and
+; compared with r29. LED2 blinks at 2 Hz meanwhile; LED0 and LED1 stay on. r1 = 0: it
+; is there; or r1 != 0 and r6 = why not: "read error", "bad checksum".
+payload:
         MOV2    r15, r26                ; where the next word goes
         MOVR    T, r27
         LSRI    2
@@ -250,12 +353,30 @@ load:   CALL    get_magic
         MOVI2   r7, 0                   ; their sum
         LIT     16384                   ; a dot every 64 KB
         MOVR    r8, T
+        MOVI2   r30, LED0 | LED1 | LED2 ; the LEDs, LED2 on first
+        STR     r30, r13
+        LDR3    r0, r13, 8              ; r0: when LED2 changes next
+        LIT     QUARTER_S
+        LSLI    8
+        MOVR    r1, T
+        ADD2    r0, r1
 @word:  CALL    get32
         CMP2    r1, r31
         B       NE, @ioerr
         STR     r2, r15
         ADD2    r7, r2
         INCWR   r15
+        LDR3    r1, r13, 8              ; time for LED2?
+        SUB2    r1, r0
+        B       MI, @noblink
+        MOVI2   r1, LED2
+        XOR2    r30, r1
+        STR     r30, r13
+        LIT     QUARTER_S
+        LSLI    8
+        MOVR    r1, T
+        ADD2    r0, r1
+@noblink:
         DECR    r8
         B       NE, @nodot
         MOVI2   r1, '.'
@@ -265,43 +386,70 @@ load:   CALL    get_magic
 @nodot: DECR    r19
         B       NE, @word
         CMP2    r7, r29                 ; the sum
-        B       EQ, @good
+        B       NE, @badsum
+        MOVI2   r1, 0
+        RET
+@badsum:
         LEA     msg_bad_sum
         B       A, @fail
-
-@good:  LEA     msg_start               ; "ok, start <entry>"
-        MOVR    r6, T
-        CALL    puts
-        MOV2    r6, r28
-        CALL    puthex
-        MOVI2   r1, 13
-        CALL    putc
-        MOVI2   r1, 10
-        CALL    putc
-        MOVI2   r1, 1                   ; close the flash or the card
-        CMP2    r20, r1
-        B       NE, @nf
-        CALL    flash_close
-@nf:    MOVI2   r1, 2
-        CMP2    r20, r1
-        B       NE, @txe
-        CALL    sd_close
-@txe:   LDR3    r1, r10, 4              ; wait until the UART has sent all
-        MOVR    T, r1
-        TTAG    4, 4
-        B       NE, @txe
-        MOVR    T, r26                  ; VEC = load
-        MOVR    VEC, T
-        MOV2    r1, r20                 ; r1 = the source, r2 = the size
-        MOV2    r2, r27
-        MOVR    T, r28
-        MOVR    PC, T                   ; go
-
 @ioerr: LEA     msg_read_error
-        B       A, @fail
-@bad:   LEA     msg_bad_header
 @fail:  MOVR    r6, T
-        CALL    puts
+        MOVI2   r1, 1
+        RET
+
+; close: the flash or the card (r20) deselected. Uses r1, r2.
+close:  MOVI2   r1, 1
+        CMP2    r20, r1
+        B       EQ, flash_close
+        MOVI2   r1, 2
+        CMP2    r20, r1
+        B       EQ, sd_close
+        RET
+
+; ================================================================ failed: stop
+; stop: LED r27 blinks at 1 Hz, with LEDs r26 on; the first r28 times it is on, a
+; long beep sounds. For ever.
+stop:   LDR3    r0, r13, 8              ; r0: the next half second
+@blink: OR3     r1, r26, r27            ; on ...
+        STR     r1, r13
+        CMP2    r28, r31
+        B       EQ, @quiet
+        DECR    r28
+        LIT     LONG_BEEP               ; ... with a beep
+        MOVR    r1, T
+        CALL    tone
+@quiet: CALL    half
+        STR     r26, r13                ; ... off
+        CALL    half
+        B       A, @blink
+
+; half: wait until r0 + 0.5 s; r0 = that. Uses r1.
+half:   LIT     HALF_S
+        LSLI    8
+        MOVR    r1, T
+        ADD2    r0, r1
+@wait:  LDR3    r1, r13, 8              ; TICKS
+        SUB2    r1, r0
+        B       MI, @wait
+        RET
+
+; tone: the amplifier on, and the sound's tone (442 Hz, height 4000) for r1 samples.
+; It plays by itself: tone returns at once. Uses r2 .. r4.
+tone:   LIT     SOUND + 8               ; CTRL: ON
+        MOVR    r2, T
+        MOVI2   r3, 1
+        STR     r3, r2
+        LIT     SOUND + 16              ; TONE: height 4000, half a period 53 samples
+        MOVR    r2, T
+        LIT     4000
+        LSLI    16
+        MOVR    r3, T
+        MOVI2   r4, 53
+        OR2     r3, r4
+        STR     r3, r2
+        LIT     SOUND + 20              ; LEN
+        MOVR    r2, T
+        STR     r1, r2
         RET
 
 ; ---------------------------------------------------------------- get32, get_magic
@@ -616,7 +764,13 @@ putc:   STR     r1, r10                 ; the UART (waits while its queue is ful
         MOVI2   r3, 10
         CMP2    r1, r3
         B       EQ, putc_done           ; LF: only the serial port
-        OR3     r2, r1, r16             ; the character with its colors
+        MOV2    r2, r1                  ; ASCII to the PET's screen code: below $40 the
+        MOVI2   r3, $40                 ; same, from $40 on AND $1F (@ A .. Z, and a .. z
+        CMP2    r2, r3                  ; as capitals)
+        B       LO, @code
+        MOVI2   r3, $1F
+        AND2    r2, r3
+@code:  OR2     r2, r16                 ; the character with its colors
         ADD3    r3, r14, r12            ; where it goes
         STR     r2, r3
         INCWR   r12                     ; the next column
@@ -694,6 +848,7 @@ msg_banner:     .asciiz "mp32 boot\r\n"
 msg_flash:      .asciiz "flash: "
 msg_sd:         .asciiz "sd card: "
 msg_serial:     .asciiz "serial port: send the image\r\n"
+msg_serial_port: .asciiz "serial port: "
 msg_loading:    .asciiz "loading "
 msg_bytes_to:   .asciiz " bytes to "
 msg_start:      .asciiz "ok, start at "
