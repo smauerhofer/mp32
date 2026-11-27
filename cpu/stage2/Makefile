@@ -4,7 +4,8 @@
 #                         pipeline, fetch to writeback, on random machine code) or
 #                         lisp (the LISP opcodes in a real program, lisp.s) or
 #                         loop (the counted loops UNEXT, NEXT2, NEXT3 in a real
-#                         program, loop.s) or irq (interrupts and exceptions
+#                         program, loop.s) or lith (LITH and LIT of 32 bits in a
+#                         real program, lith.s) or irq (interrupts and exceptions
 #                         through the whole processor, cpu.v, in a real program,
 #                         irq.s)
 #   make size             what decode takes on the chip
@@ -22,7 +23,7 @@ OTHERS = ../cpu.v ../irqc.v ../stage1/fetch.v ../stage1/pc.v ../stage1/irq_seque
          ../stage3/scratch.v ../stage3/tmplh.v \
          ../stage4/memaccess.v ../stage5/writeback.v
 
-test: test-regfile test-sequencer test-decode test-lisp test-loop test-irq
+test: test-regfile test-sequencer test-decode test-lisp test-loop test-lith test-irq
 
 # Simulation: iverilog compiles a test bench, vvp runs it. MP32_SIM: mul.v uses its
 # simulation model instead of the chip's multiplier.

@@ -75,7 +75,7 @@ module decoder (
                      A_XOR = 6, A_NOT = 7, A_LSL = 8, A_LSR = 9, A_ASR = 10, A_ROR = 11,
                      A_CSUB = 17, A_DIVS = 18, A_MUL = 19, A_SMUL = 20, A_ASL = 21,
                      A_ROL = 22, A_ROLC = 23, A_RORC = 24, A_MULS = 25,
-                     A_RSB = 26, A_RSC = 27, A_TADD = 28, A_TSUB = 29, A_TTAG = 30,
+                     A_RSB = 26, A_RSC = 27, A_TADD = 28, A_TSUB = 29, A_TTAG = 30, A_HIB = 31,
                      A_CLZ = 32, A_PCNT = 33, A_ABS = 34,
                      A_MIN = 35, A_MAX = 36, A_MINU = 37, A_MAXU = 38;
     localparam [2:0] SP_BASE = 0, SP_PUSH = 1, SP_POP = 2, SP_SET = 3, SP_ENTER = 5, SP_LEAVE = 6;
@@ -273,7 +273,7 @@ module decoder (
     // that does not exist, does nothing, as before.)
     function defined_op(input [7:0] o);
         case (o)
-            8'h40, 8'h41, 8'h42, 8'h43, 8'h44, 8'h46, 8'h47, 8'h48, 8'h49, 8'h4A, 8'h4B,
+            8'h40, 8'h41, 8'h42, 8'h43, 8'h44, 8'h45, 8'h46, 8'h47, 8'h48, 8'h49, 8'h4A, 8'h4B,
             8'hC0, 8'hC1, 8'hC2, 8'hC4, 8'hC5, 8'hC6, 8'hC8:  defined_op = 1'b1;
             default: defined_op = (o <= 8'h39)                      // NOP .. POPF
                                | (o >= 8'h50 && o <= 8'h57)        // ADDR .. CMPR
@@ -503,6 +503,8 @@ module decoder (
         8'h40: begin a_const = lit8;  rd_(T_, RES_A); end                          // LIT8
         8'h80: begin a_const = lit16; rd_(T_, RES_A); end                          // LIT16
         8'hC0: begin a_const = lit24; rd_(T_, RES_A); end                          // LIT24
+        8'h45: begin ra(T_); b_const = {b1, 24'h0}; d_alu_op = A_HIB;              // LITH: T[31:24] = b1;
+                     rd_(T_, RES_Y); end                                           // no stack, no flags
         // ---------------------------------------------------- jumps and calls
         8'h41: begin a_const = local_; rb(T_); jump_(b1[7:4], 0); end              // CJMPL
         8'h81, 8'hC1:                                                              // CBR, CBRL

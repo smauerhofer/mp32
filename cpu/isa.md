@@ -149,6 +149,7 @@ PSPH, RSPL, RSPH.
 | 0x44   | 2      | DECR     | byte 1 = 10 reg: reg = reg - 1; flags C Z N V (6502) |
 | 0x44   | 2      | INCWR    | byte 1 = 01 reg: reg = reg + 4; flags C Z N V |
 | 0x44   | 2      | DECWR    | byte 1 = 11 reg: reg = reg - 4; flags C Z N V (6502) |
+| 0x45   | 2      | LITH     | T[31:24] = an 8-bit constant (byte 1); T[23:0], the stacks and the flags stay |
 | 0x46   | 2      | ENTER    | push FP onto the return stack (push R, R = FP), FP = RSP, RSP = RSP - 4n (n words: byte 1, unsigned) |
 | 0x47   | 2      | LSLI .. RORI | SHI: T shifted / rotated by a constant 0 .. 31 (byte 1: op in bits 7..5, count in 4..0); flags C Z N V |
 | 0x49   | 2      | INTR     | interrupt n (byte 1, 0 .. 255): push R onto the return stack, R = the next instruction, jump to VEC + 4n |
@@ -634,7 +635,8 @@ the value alone. So a constant needs no path of its own between decode and execu
 The new T is forwarded, so the next instruction can use it at once.
 
 There is no LIT for a 32-bit constant: an instruction is at most 4 bytes, and LIT24
-already uses all of them.
+already uses all of them. LIT24 followed by LITH loads any 32-bit constant in 6 bytes
+(see LITH).
 
 The line rule applies: bytes past the end of a 16-byte line are read as 0, so a LIT
 may only cross the end of a line if the bytes it puts into the next line are 0
@@ -1174,6 +1176,41 @@ S < T is N != V.
 
 The flags are written as CMP leaves execute, so the next instruction (a branch, say)
 sees them at once.
+
+### LITH (0x45)
+
+    byte 0   0x45
+    byte 1   n, 8 bits (0 .. 255)
+
+Puts n into the top byte of T. Nothing else changes: T[23:0], S, the stacks and the
+flags stay as they are. Like the LITs it pushes nothing (`DUP` pushes).
+
+    T = {n, T[23:0]}
+
+With LIT24 before it, it loads a 32-bit constant in 6 bytes: LIT24 the low 24 bits
+(sign-extended, which LITH then overwrites), LITH the high 8.
+
+    LIT24   $345678     ; T = $00345678
+    LITH    $12         ; T = $12345678
+
+    DUP LIT24 LITH:  ... x    S=a  T=b
+    DUP              ... x a  S=b  T=b
+    LIT24 $345678    ... x a  S=b  T=$00345678
+    LITH  $12        ... x a  S=b  T=$12345678
+
+The assembler's `LIT` does this by itself for a constant that does not fit in 24 bits
+(signed): `LIT $CAFEBABE` is `C0 BE BA FE 45 CA`. It keeps the 6 bytes in one line (it
+pads to the next line first if they would cross its end).
+
+| stage           | what LITH does |
+|-----------------|----------------|
+| 2 decode        | reads T on port A; the constant {n, 24'h0} on operand B (`b_const`); ALU op HIB; flags mask 0 |
+| 3 execute       | the ALU: y = {b[31:24], a[23:0]} (op HIB, 31); `x_wen` = 1, `x_rd` = T, `x_result` = y |
+| 4 memory access | passes the write on |
+| 5 writeback     | writes the new T |
+
+T comes through forwarding like any operand, so LITH can follow LIT24, a load into T
+or a MOVR into T at once (`stage2/lith_tb.v`).
 
 ### CJMPL (0x41)
 

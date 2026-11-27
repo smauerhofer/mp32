@@ -54,7 +54,7 @@ internal enum InstrMode
 {
     /// <summary>An opcode named exactly: its length is fixed.</summary>
     Fixed,
-    /// <summary>LIT: the shortest of LIT8, LIT16, LIT24.</summary>
+    /// <summary>LIT: the shortest of LIT8, LIT16, LIT24; a constant beyond 24 bits LIT24 + LITH (6 bytes).</summary>
     LitAuto,
     /// <summary>CALL: the shortest of JSRS, JSR, JSRL.</summary>
     CallAuto,

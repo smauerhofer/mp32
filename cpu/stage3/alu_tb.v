@@ -14,7 +14,8 @@
 // DIVS is checked against 33-bit integer arithmetic and a multiply by 2 (its use, the
 // 64 / 32 division, is tested in tmplh_tb.v with the real TMPL).
 // TADD and TSUB are checked as ADD and SUB with V also set by a tag that is not 00;
-// TTAG against (a & mask) == (value & mask) on every low byte with many masks.
+// TTAG against (a & mask) == (value & mask) on every low byte with many masks; HIB
+// (LITH) against the top byte of b over a.
 // CLZ and PCNT against a bit-by-bit count, ABS against a signed negate (V only for
 // 0x80000000), MIN, MAX, MINU, MAXU against signed and unsigned integer compares.
 // Then the flags register: random masks, en and reset against a model.
@@ -29,10 +30,10 @@ module alu_tb;
                      ROL64 = 6'd15, ROR64 = 6'd16, CSUB = 6'd17, DIVS = 6'd18,
                      MUL = 6'd19, SMUL = 6'd20, ASL = 6'd21,
                      ROL = 6'd22, ROLC = 6'd23, RORC = 6'd24, MULS = 6'd25,
-                     RSB = 6'd26, RSC = 6'd27, TADD = 6'd28, TSUB = 6'd29, TTAG = 6'd30,
+                     RSB = 6'd26, RSC = 6'd27, TADD = 6'd28, TSUB = 6'd29, TTAG = 6'd30, HIB = 6'd31,
                      CLZ = 6'd32, PCNT = 6'd33, ABS = 6'd34,
                      MIN = 6'd35, MAX = 6'd36, MINU = 6'd37, MAXU = 6'd38;
-    localparam       NOPS = 39;           // ops 0 .. 38 (31: as ADD)
+    localparam       NOPS = 39;           // ops 0 .. 38
 
     reg  [5:0]  op = 0;
     reg  [31:0] a = 0, b = 0;
@@ -76,6 +77,7 @@ module alu_tb;
                 if ((op == TADD || op == TSUB) && (a % 4 != 0 || b % 4 != 0)) rv = 1;
             end
             TTAG: ry = {24'h0, (a[7:0] ^ b[7:0]) & b[15:8]};
+            HIB:  ry = {b[31:24], a[23:0]};
             CLZ: begin                          // from the top down, until a 1
                 ry = 0;
                 for (s = 31; s >= 0 && a[s] == 1'b0; s = s - 1) ry = ry + 1;

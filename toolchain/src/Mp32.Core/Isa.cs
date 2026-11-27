@@ -165,6 +165,7 @@ public static class Isa
         new("MINU3", 0xE2, OperandForm.FileRegRegReg, "dst = the smaller of src1, src2 (unsigned)"),
         new("MAXU3", 0xE3, OperandForm.FileRegRegReg, "dst = the larger of src1, src2 (unsigned)"),
         new("LIT8",  0x40, OperandForm.Imm, "T = 8-bit signed constant"),
+        new("LITH",  0x45, OperandForm.UImm, "T[31:24] = an 8-bit constant (0..255); T[23:0], the stacks and the flags stay"),
         new("UNEXT", 0x48, OperandForm.Local, "if R != 0: R = R - 1, jump within the line; else drop R (pop the return stack into R)"),
         new("CJMPL", 0x41, OperandForm.CondLocal, "conditional jump within the line"),
         new("JSRS",  0x42, OperandForm.Rel, "call, 8-bit offset"),

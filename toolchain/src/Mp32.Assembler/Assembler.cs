@@ -1146,7 +1146,7 @@ public sealed class Assembler(AssemblerOptions? options = null) : IEvalContext
             case InstrMode.LitAuto:
                 if (v is not { IsConstant: true } c) return 4;
                 long n = Isa.ToSigned32(c.Num);
-                return Isa.FitsSigned(n, 8) ? 2 : Isa.FitsSigned(n, 16) ? 3 : 4;
+                return Isa.FitsSigned(n, 8) ? 2 : Isa.FitsSigned(n, 16) ? 3 : Isa.FitsSigned(n, 24) ? 4 : 6;
             case InstrMode.CallAuto:
                 for (int len = 2; len <= 3; len++)
                     if (RelFits(v, i, len, (len - 1) * 8)) return len;
@@ -1426,6 +1426,20 @@ public sealed class Assembler(AssemblerOptions? options = null) : IEvalContext
                 data[a + 1] = (byte)(0x80 | i.Register);     // bit 7 = 1: MOVI2
                 data[a + 2] = (byte)v.Num;
                 return;
+            case OperandForm.Imm when len == 6:
+            {
+                // LIT of a constant beyond 24 bits: LIT24 with the low 24 bits (sign-
+                // extended), then LITH puts the top byte over them. One line: Layout
+                // pads the 6 bytes as one piece.
+                long n = Isa.ToSigned32(v.Num);
+                data[a] = 0xC0;                                    // LIT24
+                data[a + 1] = (byte)n;
+                data[a + 2] = (byte)(n >> 8);
+                data[a + 3] = (byte)(n >> 16);
+                data[a + 4] = 0x45;                                // LITH
+                data[a + 5] = (byte)(n >> 24);
+                return;
+            }
             case OperandForm.Imm:
             {
                 data[a] = len switch { 2 => 0x40, 3 => 0x80, _ => 0xC0 };

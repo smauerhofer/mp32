@@ -29,6 +29,12 @@ public class AssemblerTests
     [InlineData("LIT 'A'", "40 41")]
     [InlineData("LIT %1010", "40 0A")]
     [InlineData("LIT 0b11 << 4 | 1", "40 31")]
+    [InlineData("LIT $800000", "C0 00 00 80 45 00")]       // beyond 24 bits: LIT24 + LITH
+    [InlineData("LIT $F0000000", "C0 00 00 00 45 F0")]
+    [InlineData("LIT $12345678", "C0 78 56 34 45 12")]
+    [InlineData("LIT -$800001", "C0 FF FF 7F 45 FF")]
+    [InlineData("LITH $AB", "45 AB")]
+    [InlineData("LITH 0", "45 00")]
     public void Literals(string line, string bytes)
     {
         var code = Asm.Code($"  {line}\n");
@@ -38,9 +44,17 @@ public class AssemblerTests
     [Theory]
     [InlineData("LIT8 200")]
     [InlineData("LIT16 $8000")]
-    [InlineData("LIT $800000")]
-    [InlineData("LIT $F0000000")]
+    [InlineData("LITH 256")]
+    [InlineData("LITH -1")]
     public void LiteralsOutOfRange(string line) => Assert.NotEmpty(Asm.Errors($"  {line}\n"));
+
+    [Fact]
+    public void LitOf32BitsKeepsToOneLine()
+    {
+        // at offset 12 the 6 bytes would cross the line: 4 NOPs first
+        var code = Asm.Code("  .rept 12\n  NOP\n  .endr\n  LIT $CAFEBABE\n");
+        Assert.Equal("00 00 00 00 C0 BE BA FE 45 CA", Asm.Hex(code[12..22]));
+    }
 
     [Fact]
     public void ForwardEquateSizesLit()

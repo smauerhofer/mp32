@@ -400,7 +400,7 @@ module decode_tb;
 
     // the opcodes of the instruction set (byte 0)
     function defined(input [7:0] o);
-        defined = (o <= 8'h39) || (o >= 8'h40 && o <= 8'h44) || (o >= 8'h46 && o <= 8'h4B) ||
+        defined = (o <= 8'h39) || (o >= 8'h40 && o <= 8'h4B) ||
                   (o >= 8'h50 && o <= 8'h57) || (o >= 8'h80 && o <= 8'h8B) ||
                   (o >= 8'h90 && o <= 8'h9C) || (o >= 8'hA0 && o <= 8'hA3) ||
                   o == 8'hC0 || o == 8'hC1 || o == 8'hC2 ||
@@ -614,6 +614,7 @@ module decode_tb;
             8'h40: w1(T_, {{24{b1[7]}}, b1});                                           // LIT8
             8'h80: w1(T_, {{16{b2[7]}}, b2, b1});                                       // LIT16
             8'hC0: w1(T_, {{8{b3[7]}}, b3, b2, b1});                                    // LIT24
+            8'h45: w1(T_, {b1, t[23:0]});                                               // LITH
             8'h41, 8'h81, 8'hC1: begin                                                  // CJMPL, CBR, CBRL
                        if (op == 8'h41)      tg = {pc_of[31:4], b1[3:0]};
                        else if (op == 8'h81) tg = nx + {{20{b2[7]}}, b2, b1[3:0]};
@@ -863,6 +864,7 @@ module decode_tb;
             for (o = 8'hD8; o <= 8'hDC; o = o + 1) opcode(o);                  // LSL3 .. ROR3
             for (o = 8'hA0; o <= 8'hA3; o = o + 1) opcode(o);                  // MIN2 .. MAXU2
             for (o = 8'hE0; o <= 8'hE3; o = o + 1) opcode(o);                  // MIN3 .. MAXU3
+            opcode(8'h45);                                                     // LITH
             // the start: HLIM = $7FFFFF (MOVR HLIM, T), so CONS allocates until L
             // passes it; L comes near it now and then (MOVR L, T), so it also traps
             cmem[0] = 8'hC0; cmem[1] = 8'hFF; cmem[2] = 8'hFF; cmem[3] = 8'h7F;    // LIT24 $7FFFFF
@@ -1167,7 +1169,7 @@ module decode_tb;
             fail("too few CONS of one kind");
         end
         for (k = 0; k < 256; k = k + 1)
-            if ((k <= 8'h2F || (k >= 8'h31 && k <= 8'h33) || k == 8'h47 || k == 8'h87 || k == 8'h30 || k == 8'h46 || k == 8'h86 || k == 8'hC6 || k == 8'h40 || k == 8'h41 || k == 8'h42 || k == 8'h43 || k == 8'h44 ||
+            if ((k <= 8'h2F || (k >= 8'h31 && k <= 8'h33) || k == 8'h47 || k == 8'h87 || k == 8'h30 || k == 8'h46 || k == 8'h86 || k == 8'hC6 || k == 8'h40 || k == 8'h41 || k == 8'h42 || k == 8'h43 || k == 8'h44 || k == 8'h45 ||
                  (k >= 8'h50 && k <= 8'h57) || k == 8'h80 || k == 8'h81 || k == 8'h83 || k == 8'h84 || k == 8'h85 || (k >= 8'h90 && k <= 8'h97) || k == 8'h82 || k >= 8'hC0 && k <= 8'hC2 || k == 8'hC4 || k == 8'hC5 || k >= 8'hD0 && k <= 8'hD7 ||
                  k == 8'h48 || k == 8'h88 || k == 8'hC8 || (k >= 8'h34 && k <= 8'h39) || k == 8'h49 || k == 8'h4A ||
                  k == 8'h4B || (k >= 8'h89 && k <= 8'h8B) || (k >= 8'h98 && k <= 8'h9C) || (k >= 8'hA0 && k <= 8'hA3) ||

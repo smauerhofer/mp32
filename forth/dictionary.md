@@ -108,6 +108,7 @@ Examples (bytes of code, `RET` not counted):
 | `2DUP` | `OVER OVER` | 2 |
 | a `VARIABLE` | `DUP LIT24 addr` | 5 |
 | a `CONSTANT` (fits 24 bits) | `DUP LIT24 n` | 5 |
+| a `CONSTANT` (32 bits) | `DUP LIT24 low LITH high` | 7 |
 
 So a variable or a constant compiles as its literal, with no call.
 
@@ -125,7 +126,7 @@ line's end with `NOP`s (`0x00`) first.
 | -128 .. 127 | `DUP LIT8 n` (3 bytes) |
 | -32768 .. 32767 | `DUP LIT16 n` (4 bytes) |
 | +-8 M | `DUP LIT24 n` (5 bytes) |
-| the rest | not decided yet (e.g. two halves and a shift, or a load from a constant) |
+| the rest (32 bits) | `DUP LIT24 low LITH high` (7 bytes): LIT24 the low 24 bits, `LITH` the top byte (`../cpu/isa.md`) |
 
 ## Defining words
 
@@ -134,7 +135,7 @@ line's end with `NOP`s (`0x00`) first.
 | `:` | the compiled code, `RET` | - |
 | `CREATE` | `DUP LIT24 xt+16 RET`: 6 bytes, one line | xt + 16 on |
 | `VARIABLE` | as `CREATE`, INL 5 | one cell at xt + 16 |
-| `CONSTANT` | `DUP LIT24 n RET`, INL 5; beyond 24 bits `DUP LDR3 T, PC, 11 RET` with n at xt + 16 | (the big n) |
+| `CONSTANT` | `DUP LIT24 n RET`, INL 5; beyond 24 bits `DUP LIT24 low LITH high RET`, INL 7 | - |
 | `DOES>` | the `CREATE`d word's line becomes `DUP LIT24 xt+16`, then a jump to the code after `DOES>` | xt + 16 on |
 
 `CREATE`'s code always fits the first line, so the body can always start at xt + 16,

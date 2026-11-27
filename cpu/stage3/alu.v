@@ -74,6 +74,8 @@
 //   11100  TADD    a + b (tagged, for LISP)        0        carry
 //   11101  TSUB    a - b (tagged)                  0        no borrow
 //   11110  TTAG    (a ^ b) & (b >> 8), low 8 bits  0        cin
+//   11111  HIB     {b[31:24], a[23:0]}: the top    0        cin
+//                  byte from b (LITH)
 //  100000  CLZ     the number of leading 0 bits    0        cin
 //                  of a (32 when a = 0)
 //  100001  PCNT    the number of 1 bits in a       0        cin
@@ -94,6 +96,9 @@
 // SPARC's TADDcc, TSUBcc): V = 1 when the add / subtract overflows, or when the low
 // 2 bits of a or b are not 00 (one of them is not a fixnum). So one branch on V
 // takes both cases to the slow path. C, Z, N as ADD and SUB.
+//
+// HIB puts the top byte of bo over a's (LITH: T[31:24] = a constant); bo, as it is
+// always a constant. Z and N are those of y, C is cin, V is 0 (LITH sets no flags).
 //
 // TTAG tests a tag: b[15:8] is a mask, b[7:0] a value; y = (a ^ value) & mask, on the
 // low 8 bits (0 above), so Z = 1 exactly when (a & mask) == value. N = 0, V = 0, C =
@@ -154,7 +159,7 @@ module alu (
                      ROL64 = 6'd15, ROR64 = 6'd16, CSUB = 6'd17, DIVS = 6'd18,
                      MUL = 6'd19, SMUL = 6'd20, ASL = 6'd21,
                      ROL = 6'd22, ROLC = 6'd23, RORC = 6'd24, MULS = 6'd25,
-                     RSB = 6'd26, RSC = 6'd27, TADD = 6'd28, TSUB = 6'd29, TTAG = 6'd30,
+                     RSB = 6'd26, RSC = 6'd27, TADD = 6'd28, TSUB = 6'd29, TTAG = 6'd30, HIB = 6'd31,
                      CLZ = 6'd32, PCNT = 6'd33, ABS = 6'd34,
                      MIN = 6'd35, MAX = 6'd36, MINU = 6'd37, MAXU = 6'd38;
 
@@ -291,6 +296,7 @@ module alu (
         ASL:   begin y_old = {a[31], a[29:0], 1'b0}; c = a[30]; v = a[31] ^ a[30]; end
         TADD, TSUB: begin y_old = sum[31:0]; c = sum[32]; v = ovf | (|{a[1:0], b[1:0]}); end
         TTAG:  begin y_old = {24'h0, (a[7:0] ^ bo[7:0]) & bo[15:8]}; end
+        HIB:   begin y_old = {bo[31:24], a[23:0]}; end
         default: begin y_old = sum[31:0]; c = sum[32]; v = ovf; end
         endcase
     end
