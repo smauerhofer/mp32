@@ -121,7 +121,10 @@ it, change `SYSTEM` in `memmap.inc`.
 | `00B0` | 48 | `G_SCR` | `SCR` |
 | `00B4` | 52 | `G_BLK` | `BLK`: the block `LOAD` interprets, 0 none |
 | `00B8` | 56 | `G_SDBLKS` | the card's capacity in blocks of 512 bytes (from its CSD), 0 not known |
-| `00BC - 03FF` | | | free |
+| `00BC` | 60 | `G_WTOP` | the text window's first row (`TEXT-WINDOW`) |
+| `00C0` | 64 | `G_WROWS` | its rows |
+| `00C4` | 68 | `G_WOFF` | how far it has scrolled: the video unit's SCROLL OFFSET |
+| `00C8 - 03FF` | | | free |
 
 ### The drivers' state (SYSTEM + `0C00`, `G_DRV`)
 
@@ -292,14 +295,15 @@ volume), `INSTALL` its image to `BOOT`.
 boots), and `COLD` does not load the startup block: a way out of a bad image or a
 startup block that hangs.
 
-The screen starts with font 0, PETSCII (`../computer/README.md`, the fonts); fonts 1
-.. 3 of the font RAM are empty. `FONT` loads one from the card:
+The screen starts with font 0, Latin-1; font 1 is PETSCII, font 2 PETSCII's text set
+(small letters), font 3 the book's font (`../computer/README.md`, the fonts). `FONT`
+loads one from the card over any of them:
 
     FONT ( n f -- )      font n of the card into font f of the font RAM
                          (card sectors 8 * FONTS + 4n .. + 3 to $FFFF_8000 + 2048 f)
 
     1 1 FONT            // bold (the card's font 1) into font 1
-    0 0 FONT            // the old normal font instead of PETSCII
+    0 0 FONT            // the old normal font instead of Latin-1
 
 The fonts go onto the card once: `256 RECEIVE` at the terminal, then the PC sends
 `fonts.bin` (`make fonts PORT=COM4`, or `boot_serial.py --terminal-only --send

@@ -31,6 +31,14 @@
 // Every block has both its character and its pixels, whatever it shows: the places
 // count up the same whatever the mode RAM says, so changing it moves nothing.
 //
+// ---------------------------------------------------------------- the text window
+// A band of rows, TOP to TOP + ROWS - 1, whose text goes round by OFFSET rows: row r
+// of the band shows the text of row TOP + (r - TOP + OFFSET) mod ROWS. Scrolling the
+// band up one row is OFFSET + 1 (round) and its new last row made blank: 80 words
+// written instead of all the band's rows copied. The rows outside the band show their
+// own text (a status line, say), and the pixels never move. ROWS = 0 (after the FPGA
+// is loaded): no band, every row its own text.
+//
 // The SDRAM must have what the processor wrote, not the cache only: text and pixels
 // must be in the cache's write-through region (0x780000 - 0x7FFFFF by default,
 // 512 KB). The default bases are 0x780000 (text) and 0x790000 (pixels).
@@ -75,6 +83,11 @@
 //                                   that bit
 //   0x30034             LINE        read: the line of the last line interrupt (or the
 //                                   last line, with EVERY)
+//   0x30038             SCROLL      the text window: bits 5..0 TOP (0 - 59), bits
+//                                   13..8 ROWS (0 - 60, TOP + ROWS at most 60; 0: no
+//                                   window), bits 21..16 OFFSET (0 - ROWS-1); read
+//                                   and write. It counts for the next row the fetch
+//                                   reads, as text_base does.
 //   0x30400 - 0x307FF   palette: 256 words, 0x00BBGGRR: red in bits 7..0, green in
 //                       15..8, blue in 23..16. Write only (reads give 0: the display
 //                       reads the palette in every tick).
@@ -253,7 +266,20 @@ module video #(
 
     wire        line_event  = line_sync[2]  != line_sync[1];
     wire        frame_event = frame_sync[2] != frame_sync[1];
-    wire [5:0]  irq_reg     = cpu_addr[7:2];          // 10 IRQ_LINE, 11 IRQ_CTRL, 12 IRQ_STATUS, 13 LINE
+    wire [5:0]  irq_reg     = cpu_addr[7:2];          // 10 IRQ_LINE, 11 IRQ_CTRL, 12 IRQ_STATUS, 13 LINE, 14 SCROLL
+
+    // ---- the text window (SCROLL)
+    reg  [5:0]  scroll_top    = 6'd0;
+    reg  [5:0]  scroll_rows   = 6'd0;
+    reg  [5:0]  scroll_offset = 6'd0;
+
+    always @(posedge cpu_clk) begin
+        if (write & at_irq & (irq_reg == 6'd14)) begin
+            if (cpu_be[0]) scroll_top    <= cpu_wdata[5:0];
+            if (cpu_be[1]) scroll_rows   <= cpu_wdata[13:8];
+            if (cpu_be[2]) scroll_offset <= cpu_wdata[21:16];
+        end
+    end
 
     always @(posedge cpu_clk) begin
         line_sync  <= {line_sync[1:0],  line_toggle};
@@ -279,6 +305,7 @@ module video #(
             6'd11:   irq_value = {29'h0, irq_ctrl};
             6'd12:   irq_value = {30'h0, irq_flags};
             6'd13:   irq_value = {22'h0, line_y};    // steady for a line after its event
+            6'd14:   irq_value = {10'h0, scroll_offset, 2'b0, scroll_rows, 2'b0, scroll_top};
             default: irq_value = 32'h0;
         endcase
 
@@ -342,10 +369,16 @@ module video #(
     reg  [8:0]  f_write  = 0;           // where the next word goes in the buffer
 
     // Where things start, in units of 16 bytes:
-    //   the text of row r:   text_base  + r*20     (320 bytes a row)
+    //   the text of row r:   text_base  + m*20     (320 bytes a row; m: the row of
+    //                        text that row r shows, the text window)
     //   the pixels of line y: pixel_base + y*40     (640 bytes a line)
     wire [5:0]  job_row     = job_y[8:3];
-    wire [22:4] text_start  = text_base[22:4]  + {job_row, 4'b0} + {job_row, 2'b0};
+    wire [6:0]  win_end     = {1'b0, scroll_top} + {1'b0, scroll_rows};
+    wire        in_window   = (job_row >= scroll_top) & ({1'b0, job_row} < win_end);
+    wire [6:0]  win_moved   = {1'b0, job_row} + {1'b0, scroll_offset};
+    wire [6:0]  win_row     = (win_moved >= win_end) ? win_moved - {1'b0, scroll_rows} : win_moved;
+    wire [5:0]  text_row    = in_window ? win_row[5:0] : job_row;
+    wire [22:4] text_start  = text_base[22:4]  + {text_row, 4'b0} + {text_row, 2'b0};
     wire [22:4] pixel_start = pixel_base[22:4] + {f_y, 5'b0} + {f_y, 3'b0};
 
     // A burst stays in its kilobyte: at most the units up to its end.

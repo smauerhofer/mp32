@@ -30,7 +30,7 @@
 module computer #(
     parameter        CLK_MHZ      = 42,
     parameter        BOOT         = "boot.hex",
-    parameter        FONT_FILE    = "petscii.hex",   // font 0 PETSCII, 1 .. 3 empty
+    parameter        FONT_FILE    = "startfonts.hex", // 0 Latin-1, 1 PETSCII, 2 PETSCII text, 3 the book's
     parameter        PALETTE_FILE = "palette.hex",
     parameter [15:0] UART_DIV     = 16'd365,       // 115,200 baud at 42 MHz
     parameter [7:0]  AUDIO_DIV    = 8'd7,          // 46,875 Hz at 42 MHz

@@ -7,11 +7,12 @@
 #                      interrupt)
 #   make test-clocks   run it at 42 (the processor's clock), 54 and 100 MHz
 #   make size          synthesize the video unit alone and count what it takes
-#   make data          make palette.hex, fonts.hex, petscii.hex, text.hex,
+#   make data          make palette.hex, fonts.hex, startfonts.hex, text.hex,
 #                      pixels.hex and modes.hex again
 #
-# The fonts: petscii.hex is what the computer starts with (font 0 PETSCII, fonts
-# 1 .. 3 empty; tools/make_petscii.py). fonts.hex (normal, bold, italic, underlined
+# The fonts: startfonts.hex is what the computer starts with (font 0 Latin-1, 1 PETSCII,
+# 2 PETSCII's text set, 3 the book's font.hex; tools/make_startfonts.py, the Latin-1
+# signs from font8x8_ext_latin.h). fonts.hex (normal, bold, italic, underlined
 # from font.hex, tools/make_fonts.py) is kept for this test bench and for the SD card
 # (../computer: make fonts-sd), from where FORTH can load them.
 #   make clean
@@ -62,13 +63,13 @@ palette.hex: tools/make_palette.py
 fonts.hex: font.hex tools/make_fonts.py
 	python3 tools/make_fonts.py font.hex $@
 
-petscii.hex: font.hex tools/make_petscii.py
-	python3 tools/make_petscii.py font.hex $@
+startfonts.hex: font.hex font8x8_ext_latin.h tools/make_startfonts.py
+	python3 tools/make_startfonts.py font.hex font8x8_ext_latin.h $@
 
 text.hex pixels.hex modes.hex: tools/make_demo.py
 	python3 tools/make_demo.py text.hex pixels.hex modes.hex
 
-data: palette.hex fonts.hex petscii.hex text.hex pixels.hex modes.hex
+data: palette.hex fonts.hex startfonts.hex text.hex pixels.hex modes.hex
 
 size: video.v
 	yosys -p "read_verilog $^; synth_gowin -top video; stat"

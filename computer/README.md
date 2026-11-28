@@ -45,7 +45,7 @@ come from `../toolchain/bin`.
 |---|---|
 | `0000_0000 - 007F_FFFF` | SDRAM, 8 MB (through the cache; `0078_0000 - 007F_FFFF` write-through: the screen) |
 | `0000_0000 - 0000_03FF` | the operating system's vector table (VEC after the boot loader): entry n at 4n |
-| `0078_0000` | the screen's text: 60 rows of 80 words (code, font, paper, ink); the code is a PET screen code (see the fonts) |
+| `0078_0000` | the screen's text: 60 rows of 80 words (code, font, paper, ink); the code is the character, Latin-1 in font 0, a PET screen code in fonts 1 and 2 (see the fonts) |
 | `0079_0000` | the screen's pixels: 480 lines of 640 bytes |
 | `F000_0000 - F000_1FFF` | block RAM, 8 KB: the boot loader (loaded with the FPGA) |
 | `F000_0000 - F000_00BF` | its vector table (VEC after reset): entry n at `F000_0000 + 4n` (0 reset, 1 undefined opcode, the rest: "unexpected") |
@@ -57,8 +57,8 @@ come from `../toolchain/bin`.
 | `FFFF_0500` | SPI flash: +0 DATA, +4 DATA32, +8 CTRL, +12 DATA32LE (`../sdcard/sdcard.v` again, 21 MHz) |
 | `FFFF_0600` | keyboard and mouse: +0 STATUS, +4 KEYS0, +8 KEYS1, +12 MOUSE, +16 BUTTONS, +20 LEDS, +24 CTRL (`../keyboard/keyboard.v`) |
 | `FFFF_0700` | two timers: +0 T0CTRL, +4 T0PERIOD, +8 T0COUNT, +16 T1CTRL, +20 T1PERIOD, +24 T1COUNT, +32 FREQ (`../timer/timer.v`) |
-| `FFFF_8000 - FFFF_9FFF` | the video unit's font RAM: 4 fonts of 2 KB, font f at `FFFF_8000 + 2048 f`; font 0 PETSCII, 1 .. 3 empty after reset |
-| `FFFF_A000 - FFFF_AFFF` | its registers: `A020` text_base, `A024` pixel_base, `A028` IRQ_LINE, `A02C` IRQ_CTRL, `A030` IRQ_STATUS, `A034` LINE, `A400 - A7FF` palette |
+| `FFFF_8000 - FFFF_9FFF` | the video unit's font RAM: 4 fonts of 2 KB, font f at `FFFF_8000 + 2048 f`; after reset: 0 Latin-1, 1 PETSCII, 2 PETSCII text, 3 the book's font |
+| `FFFF_A000 - FFFF_AFFF` | its registers: `A020` text_base, `A024` pixel_base, `A028` IRQ_LINE, `A02C` IRQ_CTRL, `A030` IRQ_STATUS, `A034` LINE, `A038` SCROLL (the text window: TOP, ROWS << 8, OFFSET << 16), `A400 - A7FF` palette |
 | `FFFF_B000 - FFFF_BFFF` | its mode RAM (which blocks are graphics) |
 | `FFFF_C000 - FFFF_CFFF` | the sound's sample memory: bank 0 at `C000`, bank 1 at `C800`, 1024 samples each, two to a word (write only) |
 
@@ -279,26 +279,35 @@ so a program gets 1 ms as FREQ / 1000 without knowing the clock.
 
 ## The fonts
 
-The video unit starts with `../display2/petscii.hex` (`tools/make_petscii.py`): **font
-0 is a PETSCII font**, in the order of the Commodore PET's screen codes; fonts 1 .. 3
-are empty. The boot loader and `os.s` write green (ink 82, `$5FFF00`) on black (paper
-0), as on the PET.
+The video unit starts with `../display2/startfonts.hex` (`tools/make_startfonts.py`).
+A cell's byte 1 picks the font:
 
-| code | characters |
-|---|---|
-| `$00 - $1F` | @ A .. Z [ £ ] ↑ ← |
-| `$20 - $3F` | space ! " # $ % & ' ( ) * + , - . / 0 .. 9 : ; < = > ? (as ASCII) |
-| `$40 - $7F` | the 64 graphics characters: lines, corners, blocks, card suits, circles, π, checkerboards |
-| `$80 - $FF` | the same, inverted: reverse video; `$A0` is a solid block (the cursor) |
+| font | what | the code byte |
+|---|---|---|
+| 0 | **Latin-1** (ISO 8859-1): ASCII and `$A0 - $FF` (£ © é ü ß ...); `$00 - $1F`, `$7F - $9F` blank | the character itself |
+| 1 | PETSCII, the PET's graphics set: capitals and the 64 graphics characters | a PET screen code |
+| 2 | PETSCII, the PET's text set: small letters and capitals | a PET screen code |
+| 3 | the book's font (`../display2/font.hex`): ASCII, `$80 - $FF` the same inverted | the character |
 
-`putc` turns ASCII into screen codes: below `$40` the same, from `$40` on `AND $1F`.
-So both A and a show as A (capitals only, as on the PET), and `\ ^ _` show as £ ↑ ←.
-The serial port still gets the ASCII bytes as they are.
+The PET's screen codes (fonts 1 and 2):
 
-The letters, digits and signs come from `../display2/font.hex` (font8x8_basic,
-public domain); £, the arrows and the graphics characters are drawn in
-`make_petscii.py`, after the PET's set (what each character is, not its ROM bit for
-bit). `../display2/preview-petscii.png` shows all 256.
+| code | font 1 | font 2 |
+|---|---|---|
+| `$00 - $1F` | @ A .. Z [ £ ] ↑ ← | @ a .. z [ £ ] ↑ ← |
+| `$20 - $3F` | space ! " # ... 0 .. 9 : ; < = > ? (as ASCII) | the same |
+| `$40 - $7F` | the 64 graphics characters: lines, corners, blocks, card suits, circles, π, checkerboards | `$41 - $5A` A .. Z; `$5E $5F $69 $7A` a checkerboard, two striped triangles, a check mark; the rest as font 1 |
+| `$80 - $FF` | the same, inverted: reverse video | the same, inverted |
+
+The boot loader, `os.s` and FORTH write green (ink 82, `$5FFF00`) on black (paper 0),
+as on the PET, in font 0: `putc` puts the byte into the cell as it is, so the screen
+shows small letters and the Latin-1 characters. FORTH's cursor swaps a cell's ink and
+paper.
+
+ASCII and the PET's letters come from `../display2/font.hex` (font8x8_basic, Daniel
+Hepper, public domain), the Latin-1 characters from `../display2/font8x8_ext_latin.h`
+(the same author, public domain); £, the arrows and the graphics characters are drawn
+in `make_startfonts.py`, after the PET's sets (what each character is, not its ROM bit
+for bit). `../display2/preview-startfonts.png` shows the four fonts.
 
 **The old fonts** (`../display2/fonts.hex`: normal, bold, italic, underlined, from
 `font.hex` with `make_fonts.py`) are no longer in the bitstream; the video unit's own
@@ -306,7 +315,8 @@ test bench still uses them. They go onto the SD card, for FORTH to load into the
 RAM:
 
     make fonts-sd       build/fonts.bin: the four fonts, raw, 8 KB (16 blocks)
-                        (and build/petscii.bin: the PETSCII font with 3 empty ones)
+                        (and build/startfonts.bin: the four fonts the computer
+                        starts with)
 
 On the card they are in FORTH's range `FONTS` (FORTH's block 256 on, the card's
 block 2048 on): font n of `fonts.bin` in the card's blocks 2048 + 4n .. + 4n + 3.

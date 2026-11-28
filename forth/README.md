@@ -70,8 +70,20 @@ LED0 .. LED2 are the loader's phases; LED3 goes on when FORTH runs.
   `PAUSE`, and with no task awake the processor `WAIT`s for an interrupt.
 - **Output**: `EMIT` writes to the screen and into a 1 KB queue that the serial port's
   TX interrupt empties. The screen goes on below the loader's lines (the row the
-  loader would write next) and scrolls at the bottom; green on black, PETSCII font 0:
-  letters show as capitals. The cursor (an inverted cell) shows while `KEY` waits.
+  loader would write next) and scrolls at the bottom of the text window; green on
+  black, font 0 Latin-1
+  (the byte as it is). The cursor (the cell's ink and paper swapped) shows while
+  `KEY` waits. Fonts 1 and 2 are PETSCII (capitals and graphics, small letters), font
+  3 the book's font (`../computer/README.md`, the fonts).
+- **The text window**: `top rows TEXT-WINDOW` makes rows top .. top + rows - 1 the
+  rows that scroll (then `PAGE`: the window blank, the cursor at its top);
+  `TEXT-WINDOW@ ( -- top rows )`. After a boot it is the whole screen (0 60); COLD keeps
+  the window the video unit has (the loader sets none: after a reset). Scrolling
+  is done by the video unit: its SCROLL register makes the window's rows go round by
+  an offset, so a scroll writes the register and blanks one row (80 words) instead of
+  copying the screen (19,200 bytes). The rows outside the window keep their text and
+  do not scroll (`AT-XY` reaches them): graphics rows (the mode RAM), a status line.
+  `PAGE` clears only the window.
 - **Errors**: `QUIT` runs each line under `CATCH`; an error says what it was (`FOO ?`,
   `stack underflow`, `division by zero`, `I compile only`, an `ABORT"` message),
   empties the stack, and FORTH goes on. An undefined opcode, a full CONS heap or an
@@ -104,7 +116,7 @@ LED0 .. LED2 are the loader's phases; LED3 goes on when FORTH runs.
 | variables | `BASE STATE >IN FRAMES HEX DECIMAL PAD SOURCE` |
 | dictionary | `HERE ALLOT ALIGN ALIGNED , C, UNUSED >BODY EXECUTE` |
 | tasks | `PAUSE STOP WAKE SLEEP` |
-| terminal | `EMIT KEY KEY? TYPE CR SPACE SPACES PAGE AT-XY ACCEPT` (and `(EMIT) (KEY)`, the vectors' defaults) |
+| terminal | `EMIT KEY KEY? TYPE CR SPACE SPACES PAGE AT-XY TEXT-WINDOW TEXT-WINDOW@ ACCEPT` (and `(EMIT) (KEY)`, the vectors' defaults) |
 | numbers out | `HOLD <# # #S #> SIGN . U. .R U.R ? .S DUMP` |
 | numbers in, parsing | `NUMBER? PARSE-NAME PARSE WORD CHAR ( // /* .(` |
 | finding | `(FIND) FIND ' WORDS` |

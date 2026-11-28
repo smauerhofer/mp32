@@ -42,7 +42,8 @@
 ;   $FFFF_A000  video registers ($FFFF_A020 text_base, $FFFF_A024 pixel_base,
 ;               $FFFF_A02C IRQ_CTRL, $FFFF_A030 IRQ_STATUS)
 ;   $0078_0000  the screen's text: 60 rows of 80 words (code, font, paper, ink); the
-;               code is the PET's screen code (font 0, ../display2/tools/make_petscii.py)
+;               code is the character itself, Latin-1 (font 0,
+;               ../display2/tools/make_startfonts.py)
 ;
 ; Registers kept across the whole program:
 ;   r10 UART  r11 text  r12 column * 4  r13 LEDs  r14 the row's address
@@ -223,13 +224,7 @@ putc:   STR     r1, r10                 ; the UART (waits while its queue is ful
         MOVI2   r3, 10
         CMP2    r1, r3
         B       EQ, putc_done           ; LF: only the serial port
-        MOV2    r2, r1                  ; ASCII to the PET's screen code: below $40 the
-        MOVI2   r3, $40                 ; same, from $40 on AND $1F (@ A .. Z, and a .. z
-        CMP2    r2, r3                  ; as capitals)
-        B       LO, @code
-        MOVI2   r3, $1F
-        AND2    r2, r3
-@code:  OR2     r2, r16                 ; the character with its colors
+        OR3     r2, r1, r16             ; the character (Latin-1, font 0) with its colors
         ADD3    r3, r14, r12            ; where it goes
         STR     r2, r3
         INCWR   r12                     ; the next column

@@ -207,8 +207,20 @@ module forth_tb;
     endtask
 
     // ---------------------------------------------------------------- the screen
+    // what row r, column c of the screen shows: its row of text through the video
+    // unit's text window (SCROLL)
     function [31:0] screen(input integer r, input integer c);
-        screen = chip.mem[chip_index(23'h780000 + r * 320 + c * 4)];
+        integer top, rows, m;
+        begin
+            top  = dut.picture.scroll_top;
+            rows = dut.picture.scroll_rows;
+            m    = r;
+            if (r >= top && r < top + rows) begin
+                m = r + dut.picture.scroll_offset;
+                if (m >= top + rows) m = m - rows;
+            end
+            screen = chip.mem[chip_index(23'h780000 + m * 320 + c * 4)];
+        end
     endfunction
 
     // row r begins with text (len characters, ASCII), green on black
@@ -219,7 +231,7 @@ module forth_tb;
         begin
             for (c = 0; c < n; c = c + 1) begin
                 ch   = text[8*(n-1-c) +: 8];
-                want = {8'd82, 8'd0, 8'd0, (ch >= 8'h40) ? (ch & 8'h1F) : ch};
+                want = {8'd82, 8'd0, 8'd0, ch};
                 if (screen(r, c) !== want) begin
                     errors = errors + 1;
                     if (errors <= 30)
@@ -307,7 +319,7 @@ module forth_tb;
         // ================================================ the interpreter
         check("1 2 + .", "1 2 + . 3 ");
         #100000;
-        check_row(3, "> 1 2 + . 3  OK", 15);                        // below the banner
+        check_row(3, "> 1 2 + . 3  ok", 15);                        // below the banner
         check("HEX FF DECIMAL .", "255 ");
         check("$10 #10 %10 + + .", "28 ");
         check("-5 ABS . 7 NEGATE .", "5 -7 ");
@@ -500,18 +512,49 @@ module forth_tb;
         $display("the volume, the source blocks' header, the startup block, RECEIVE, INSTALL (%0d blocks written)",
                  card.blocks_written);
 
+        // ================================================ the text window
+        // rows 50 .. 54 scroll, in the video unit; the rest of the screen stays
+        check("50 5 TEXT-WINDOW TEXT-WINDOW@ . .", "5 50 ");
+        if (dut.picture.scroll_top !== 6'd50 || dut.picture.scroll_rows !== 6'd5
+            || dut.picture.scroll_offset !== 6'd0) begin
+            errors = errors + 1;
+            $display("FAIL: TEXT-WINDOW: SCROLL top %0d rows %0d offset %0d",
+                     dut.picture.scroll_top, dut.picture.scroll_rows, dut.picture.scroll_offset);
+        end
+        row0 = screen(49, 0);
+        check("1 .", "1 ");                                            // rows 51 .. 54
+        check("2 .", "2 ");
+        check("3 .", "3 ");
+        check("4 .", "4 ");                                            // then it scrolls
+        check("5 .", "5 ");
+        check("6 .", "6 ");
+        #100000;
+        if (dut.picture.scroll_offset !== 6'd3) begin
+            errors = errors + 1;
+            $display("FAIL: the text window scrolled %0d rows, expected 3", dut.picture.scroll_offset);
+        end
+        check_row(52, "> 5 . 5  ok", 11);
+        check_row(53, "> 6 . 6  ok", 11);
+        check_row(54, "> ", 2);
+        if (screen(49, 0) !== row0) begin
+            errors = errors + 1;
+            $display("FAIL: row 49, outside the text window, changed: %h", screen(49, 0));
+        end
+        check("0 60 TEXT-WINDOW", "");
+        $display("the text window: rows 50 .. 54 scrolled 3 rows in the video unit");
+
         // ================================================ the screen
         check("PAGE 0 59 AT-XY .( Z) CR .( Y)", {"Z", CRLF, "Y"});
         t0 = $time;
-        // the second scroll (after " ok") ends with row 59 blank: about 1.5 ms
-        // (the prompt, then the cursor, an inverted space, while KEY waits)
-        while (screen(59, 2) !== {8'd82, 16'd0, 8'hA0} && $time < t0 + 20_000_000) #10000;
+        // the second scroll (after " ok") ends with row 59 blank (the video unit scrolls)
+        // (the prompt, then the cursor, a space with ink and paper swapped, while KEY waits)
+        while (screen(59, 2) !== 32'h00520020 && $time < t0 + 20_000_000) #10000;
         $display("the screen: scrolled %0.2f ms after the \" ok\"", ($time - t0) / 1.0e6);
         #100000;
         check_row(57, "Z", 1);
-        check_row(58, "Y OK", 4);
+        check_row(58, "Y ok", 4);
         check_row(59, "> ", 2);
-        if (screen(59, 2) !== 32'h520000A0) begin
+        if (screen(59, 2) !== 32'h00520020) begin
             errors = errors + 1;
             $display("FAIL: no cursor at row 59 column 2: %h", screen(59, 2));
         end

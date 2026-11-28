@@ -25,12 +25,13 @@
 # COM4 or /dev/ttyS3 (COMn is /dev/ttyS(n-1)); no terminal may have it open.
 #   make fonts-sd   build/fonts.bin: the four old fonts (../display2/fonts.hex: normal,
 #                   bold, italic, underlined), raw, 8 KB, for the SD card at FONT_LBA
-#                   (see README.md, the fonts); build/petscii.bin, the PETSCII font
+#                   (see README.md, the fonts); build/startfonts.bin, the 4 fonts the
+#                   computer starts with (Latin-1, PETSCII, PETSCII text, the book's)
 #   make clean      throw away what the build made
 #
 # The assembler, the linker and mp32img come from ../toolchain/bin: build the
 # toolchain first (see ../toolchain/README.md). Everything is built in build/, where
-# the memory files (boot.hex, petscii.hex, palette.hex, os.img) are put next to what
+# the memory files (boot.hex, startfonts.hex, palette.hex, os.img) are put next to what
 # reads them.
 
 BUILD   ?= build
@@ -63,7 +64,7 @@ DEV = iodec.v ../uart/uart.v ../uart/uart_rx.v ../uart/uart_tx.v ../uart/fifo.v 
       ../display2/video.v raster.v tmds.v
 COMPUTER = computer.v $(CPU) $(MEM) $(DEV)
 BOARD    = top.v pll.v serializer.v $(COMPUTER)
-DATA     = $(BUILD)/boot.hex $(BUILD)/petscii.hex $(BUILD)/palette.hex
+DATA     = $(BUILD)/boot.hex $(BUILD)/startfonts.hex $(BUILD)/palette.hex
 MODELS   = ../cache/sdram_model.v flash_model.v ../sdcard/sd_model.v
 
 all: test
@@ -97,7 +98,7 @@ $(BUILD)/%.hex: ../display2/%.hex
 	cp $< $@
 
 # ---------------------------------------------------------------- fonts for the SD card
-fonts-sd: $(BUILD)/fonts.bin $(BUILD)/petscii.bin
+fonts-sd: $(BUILD)/fonts.bin $(BUILD)/startfonts.bin
 
 $(BUILD)/%.bin: ../display2/%.hex ../display2/tools/font_bin.py
 	mkdir -p $(BUILD)

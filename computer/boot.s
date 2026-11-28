@@ -62,7 +62,8 @@
 ;   $FFFF_0300  the sound (../audio/audio.v): +8 CTRL (bit 0 ON), +16 TONE, +20 LEN
 ;   $FFFF_0500  SPI flash: as the microSD
 ;   $0078_0000  the screen's text: 60 rows of 80 words (code, font, paper, ink); the
-;               code is the PET's screen code (font 0, ../display2/tools/make_petscii.py)
+;               code is the character itself, Latin-1 (font 0,
+;               ../display2/tools/make_startfonts.py)
 ;
 ; Registers kept across the whole loader:
 ;   r9  $100  r10 UART  r11 text  r12 column * 4  r13 LEDs  r14 the row's address
@@ -149,7 +150,10 @@ start:  LIT     -$FE00                  ; $FFFF_0200: the LEDs
         MOVI2   r31, 0
         MOVI2   r20, 0                  ; no source yet: putc writes to both
         MOVI2   r22, 0
-
+        LIT     -$6000                  ; $FFFF_A000: the video unit
+        MOVR    r1, T
+        STR3    r31, r1, $38            ; SCROLL 0: no text window, rows as they are
+                                        ; (FORTH may have left one: a reset)
         CALL    cls
         LEA     msg_banner
         MOVR    r6, T
@@ -836,13 +840,7 @@ putc:   MOVI2   r3, 3
         MOVI2   r3, 10
         CMP2    r1, r3
         B       EQ, putc_done           ; LF: only the serial port
-        MOV2    r2, r1                  ; ASCII to the PET's screen code: below $40 the
-        MOVI2   r3, $40                 ; same, from $40 on AND $1F (@ A .. Z, and a .. z
-        CMP2    r2, r3                  ; as capitals)
-        B       LO, @code
-        MOVI2   r3, $1F
-        AND2    r2, r3
-@code:  OR2     r2, r16                 ; the character with its colors
+        OR3     r2, r1, r16             ; the character (Latin-1, font 0) with its colors
         ADD3    r3, r14, r12            ; where it goes
         STR     r2, r3
         INCWR   r12                     ; the next column

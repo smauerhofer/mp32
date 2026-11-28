@@ -98,7 +98,8 @@ SD_SLOW     = 52 << 8           ; the card's CTRL: DIV 52, 396 kHz (to start it)
 TEXT        = $780000           ; 60 rows of 80 cells
 TEXT_END    = TEXT + 60 * 80 * 4
 PIXELS      = $790000           ; 480 lines of 640 bytes
-FONTRAM     = $FFFF8000         ; font f at FONTRAM + 2048 * f; font 0 PETSCII
+V_SCROLL    = $38               ; the video unit's SCROLL: TOP, ROWS << 8, OFFSET << 16
+FONTRAM     = $FFFF8000         ; font f at FONTRAM + 2048 * f; 0 Latin-1, 1 .. 2 PETSCII, 3 the book's
 INK_GREEN   = 82                ; $5FFF00, the PET's green
 PAPER_BLACK = 0
 
@@ -155,6 +156,12 @@ G_BCUR      = $AC - $80         ; the buffer of the last BLOCK / BUFFER (UPDATE)
 G_SCR       = $B0 - $80         ; SCR: the block LIST showed last
 G_BLK       = $B4 - $80         ; BLK: the block LOAD interprets (0: none)
 G_SDBLKS    = $B8 - $80         ; the card's capacity in blocks of 512 bytes (0: not known)
+; the text window (TEXT-WINDOW): rows WTOP .. WTOP + WROWS - 1 scroll, by the video
+; unit's SCROLL register: row r of the window shows the text of row
+; WTOP + (r - WTOP + WOFF) mod WROWS
+G_WTOP      = $BC - $80         ; its first row (0 .. 59)
+G_WROWS     = $C0 - $80         ; its rows (1 .. 60 - WTOP)
+G_WOFF      = $C4 - $80         ; how far it has scrolled (0 .. WROWS - 1)
 
 ; ---------------------------------------------------------------- the user area (r31)
 ; the scheduler's cells first: PAUSE uses them

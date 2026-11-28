@@ -65,6 +65,8 @@ module computer_tb;
     wire [1:0]  sd_ba;
     wire [31:0] sd_dq;
 
+    reg [1:0]   buttons = 2'b00;        // S1, S2 (1 = pressed)
+
     computer #(.UART_DIV(DIV)) dut (
         .clk(clk), .pixel_clk(pixel_clk), .reset(reset),
         .buttons(buttons), .leds(leds), .uart_rx(rx), .uart_tx(tx),
@@ -224,12 +226,12 @@ module computer_tb;
 
     task check_row(input integer r, input [8*16-1:0] text, input integer len);
         integer c;
-        reg [7:0]  ch;                  // ASCII: the screen shows the PET's screen code
+        reg [7:0]  ch;                  // ASCII: the screen holds it as it is (font 0, Latin-1)
         reg [31:0] want;
         begin
             for (c = 0; c < 80; c = c + 1) begin
                 ch   = (c < len) ? text[8*(len-1-c) +: 8] : 8'h20;
-                want = {8'd82, 8'd0, 8'd0, (ch >= 8'h40) ? (ch & 8'h1F) : ch};
+                want = {8'd82, 8'd0, 8'd0, ch};
                 if (screen(r, c) !== want) begin
                     errors = errors + 1;
                     if (errors <= 20)
@@ -333,7 +335,6 @@ module computer_tb;
         end
     endtask
 
-    reg [1:0] buttons = 2'b00;
     integer t0, mark1;
     initial begin
         flash.load("os.img");

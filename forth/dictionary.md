@@ -74,8 +74,8 @@ A word list is one cell: the xt of its newest word. `FIND` walks LINK from it:
         xt = h & $7F_FFF0
 
 The length is in the same cell as the link, so a word with the wrong length costs
-one load and a compare. Names are kept in capitals and compared without case: the
-screen shows capitals only (PETSCII), the serial port may send small letters.
+one load and a compare. Names are kept in capitals and compared without case: `dup` and
+`DUP` are the same word.
 
 The search order (`CONTEXT`, `#ORDER`) and `CURRENT` are in the user area; FORTH
 2012's word lists (`WORDLIST`, `SET-ORDER`, ...) fit as they are.

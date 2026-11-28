@@ -81,7 +81,7 @@ $(BUILD)/forth.img: $(BUILD)/forth.bin
 	$(IMG) --info $@
 
 # ---------------------------------------------------------------- simulation
-DATA = $(BUILD)/boot.hex $(BUILD)/petscii.hex $(BUILD)/palette.hex
+DATA = $(BUILD)/boot.hex $(BUILD)/startfonts.hex $(BUILD)/palette.hex
 
 test: $(BUILD)/forth_tb.vvp $(DATA) $(BUILD)/forth.img
 	cd $(BUILD) && vvp forth_tb.vvp

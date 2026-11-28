@@ -434,6 +434,7 @@ cold:   CLI
         STR3    T, r30, G_IRQC
         LIT     -$6000                  ; $FFFF_A000
         STR3    T, r30, G_VIDEO
+        CALL    win_init                ; the text window, as the video unit has it
         LIT     -$FA00                  ; $FFFF_0600
         STR3    T, r30, G_KBD
         LIT     -$FE00                  ; $FFFF_0200
@@ -490,7 +491,15 @@ cold:   CLI
         SUB2    r3, r4
         INCR    r2
         B       A, @div
-@row:   STR3    r2, r30, G_ROW
+@row:   LDR3    r0, r30, G_WTOP         ; inside the text window
+        CMP2    r2, r0
+        B       HS, @intop
+        MOV2    r2, r0
+@intop: LDR3    r1, r30, G_WROWS
+        ADD2    r0, r1
+        DECR    r0
+        MINU2   r2, r0
+        STR3    r2, r30, G_ROW
 
         ; ---- OPERATOR: its user area, linked to itself
         MOVI2   r0, 1
@@ -683,28 +692,90 @@ type_clean:
         RET
 
 ; ================================================================ the screen
-; The cursor's cell: r0 = TEXT + ROW * 320 + COL * 4. Uses r1 .. r3.
+; The cursor's cell: r0 = TEXT + m * 320 + COL * 4, m the row of text that the
+; screen's row ROW shows (the text window). Uses r1 .. r4.
 cell_addr:
         LDR3    r1, r30, G_ROW
-        MOVI2   r2, 6
-        LSL3    r3, r1, r2              ; row * 64
-        MOVI2   r2, 8
-        LSL2    r1, r2                  ; row * 256
-        ADD2    r1, r3
+        CALL    text_row
+        CALL    row_addr
         LDR3    r3, r30, G_COL
         ADD2    r3, r3
         ADD2    r3, r3
-        ADD2    r1, r3
-        MOVI2   r0, TEXT >> 16
-        MOVI2   r2, 16
-        LSL2    r0, r2
-        ADD2    r0, r1
+        ADD2    r0, r3
         RET
 
+; text_row: r1, a row of the screen, becomes the row of text it shows: in the text
+; window WTOP + (r1 - WTOP + WOFF) mod WROWS, outside it r1. Uses r2 .. r4.
+text_row:
+        LDR3    r2, r30, G_WTOP
+        CMP2    r1, r2
+        B       LO, @ret
+        LDR3    r4, r30, G_WROWS
+        ADD3    r3, r2, r4              ; r3: the row below the window
+        CMP2    r1, r3
+        B       HS, @ret
+        LDR3    r2, r30, G_WOFF
+        ADD2    r1, r2
+        CMP2    r1, r3
+        B       LO, @ret
+        SUB2    r1, r4
+@ret:   RET
+
+; row_addr: r0 = TEXT + r1 * 320, row r1 of the text. Uses r2, r3.
+row_addr:
+        MOVI2   r2, 6
+        LSL3    r3, r1, r2              ; row * 64
+        MOVI2   r2, 8
+        LSL3    r0, r1, r2              ; row * 256
+        ADD2    r0, r3
+        MOVI2   r2, TEXT >> 16
+        MOVI2   r3, 16
+        LSL2    r2, r3
+        ADD2    r0, r2
+        RET
+
+; set_scroll: the video unit's SCROLL from WTOP, WROWS, WOFF. Uses r1 .. r3.
+set_scroll:
+        LDR3    r1, r30, G_WOFF
+        MOVI2   r3, 8
+        LSL2    r1, r3
+        LDR3    r2, r30, G_WROWS
+        OR2     r1, r2
+        LSL2    r1, r3
+        LDR3    r2, r30, G_WTOP
+        OR2     r1, r2
+        LDR3    r2, r30, G_VIDEO
+        STR3    r1, r2, V_SCROLL
+        RET
+
+; win_init: the text window from the video unit's SCROLL (COLD keeps it, the screen
+; as it is); none there (after the FPGA is loaded or the loader ran): the whole
+; screen. Uses r0 .. r3.
+win_init:
+        LDR3    r0, r30, G_VIDEO
+        LDR3    r0, r0, V_SCROLL
+        MOVI2   r3, 63
+        AND3    r1, r0, r3              ; TOP
+        STR3    r1, r30, G_WTOP
+        MOVI2   r2, 8
+        LSR2    r0, r2
+        AND3    r1, r0, r3              ; ROWS
+        STR3    r1, r30, G_WROWS
+        LSR2    r0, r2
+        AND2    r0, r3                  ; OFFSET
+        STR3    r0, r30, G_WOFF
+        CMPI2   r1, 0
+        B       NE, set_scroll
+        STR3    r1, r30, G_WTOP         ; none: rows 0 .. 59
+        STR3    r1, r30, G_WOFF
+        MOVI2   r1, 60
+        STR3    r1, r30, G_WROWS
+        B       A, set_scroll
+
 ; scr_putc: the character r0 onto the screen at the cursor. CR, LF, BS move the
-; cursor; other control codes are left out. ASCII becomes the PET's screen code (below
-; $40 the same, $40 .. $7F AND $1F: the letters as capitals); 128 .. 255 are written as
-; screen codes (the inverted characters). Uses r0 .. r9 and T (kept).
+; cursor; other control codes are left out. The code goes into the cell as it is: in
+; font 0 (Latin-1) the character itself; in fonts 1 and 2 (PETSCII) a PET screen code.
+; Uses r0 .. r9 and T (kept).
 scr_putc:
         CMPI2   r0, 13
         B       EQ, @cr
@@ -714,13 +785,7 @@ scr_putc:
         B       EQ, @bs
         CMPI2   r0, 32
         B       LO, @ret
-        CMPI2   r0, $40
-        B       LO, @code
-        CMPI2   r0, $7F
-        B       HI, @code
-        MOVI2   r1, $1F
-        AND2    r0, r1
-@code:  LDR3    r1, r30, G_COLOURS
+        LDR3    r1, r30, G_COLOURS
         OR3     r9, r0, r1
         CALL    cell_addr
         STR     r9, r0
@@ -742,40 +807,39 @@ scr_putc:
         STR3    r1, r30, G_COL
 @ret:   RET
 
-; scr_lf: the cursor one row down; at the bottom the screen scrolls up.
+; scr_lf: the cursor one row down; from the text window's last row the window
+; scrolls up. Below the window it goes down to row 59 and stays there.
 scr_lf: LDR3    r1, r30, G_ROW
         INCR    r1
+        LDR3    r2, r30, G_WTOP
+        LDR3    r3, r30, G_WROWS
+        ADD2    r2, r3                  ; the row below the window
+        CMP2    r1, r2
+        B       EQ, scroll              ; the cursor stays on the last row
         CMPI2   r1, 60
         B       LO, @ok
-        CALL    scroll
         MOVI2   r1, 59
 @ok:    STR3    r1, r30, G_ROW
         RET
 
-; scroll: rows 1 .. 59 up by one, row 59 blank. Uses r1 .. r8, T (kept).
-scroll: MOVI2   r4, TEXT >> 16
-        MOVI2   r2, 16
-        LSL2    r4, r2                  ; r4: TEXT, where the rows go
-        MOVI2   r5, 5
-        MOVI2   r2, 6
-        LSL2    r5, r2                  ; 320
-        ADD2    r5, r4                  ; r5: TEXT + 320, where they come from
-        MOV2    r8, T
-        LIT     59 * 80 / 4 - 1         ; four words a step
-        MOVR    r7, T
-        MOV2    T, r8
-@copy:  LDR     r1, r5
-        LDR3    r2, r5, 4
-        LDR3    r3, r5, 8
-        LDR3    r6, r5, 12
-        STR     r1, r4
-        STR3    r2, r4, 4
-        STR3    r3, r4, 8
-        STR3    r6, r4, 12
-        ADDI2   r5, 16
-        ADDI2   r4, 16
-        NEXT    r7, @copy
-        MOVI2   r7, 79                  ; row 59 blank
+; scroll: the text window up by one row, in the video unit (WOFF + 1, round), its
+; new last row blank: 80 words written, nothing copied. Uses r0 .. r4, r7, T (kept).
+scroll: LDR3    r1, r30, G_WOFF
+        INCR    r1
+        LDR3    r2, r30, G_WROWS
+        CMP2    r1, r2
+        B       LO, @off
+        MOVI2   r1, 0
+@off:   STR3    r1, r30, G_WOFF
+        CALL    set_scroll
+        LDR3    r1, r30, G_WTOP         ; the window's last row
+        LDR3    r2, r30, G_WROWS
+        ADD2    r1, r2
+        DECR    r1
+        CALL    text_row
+        CALL    row_addr
+        MOV2    r4, r0
+        MOVI2   r7, 79                  ; its 80 cells blank
 ; blank_words: r7 + 1 words from r4 on blank (a space in the colours). Uses r1, r2.
 blank_words:
         LDR3    r1, r30, G_COLOURS
@@ -786,7 +850,7 @@ blank_words:
         NEXT    r7, @l
         RET
 
-; the cursor: the cell's character inverted while KEY waits
+; the cursor: the cell's ink and paper swapped while KEY waits
 cursor_on:
         LDR3    r0, r30, G_CURSOR
         CMPI2   r0, 0
@@ -800,12 +864,17 @@ cursor_off:
         B       EQ, cursor_ret
         MOVI2   r0, 0
         STR3    r0, r30, G_CURSOR
-cursor_flip:
+cursor_flip:                            ; uses r0 .. r4
         CALL    cell_addr
-        LDR     r1, r0
-        MOVI2   r2, 64
-        ADD2    r2, r2                  ; $80: inverted
-        XOR2    r1, r2
+        LDR     r1, r0                  ; ink (byte 3), paper (byte 2), font, code
+        MOVI2   r3, 8
+        LSR3    r2, r1, r3
+        XOR2    r2, r1                  ; byte 2: ink XOR paper
+        LDA     r4, $00FF0000
+        AND2    r2, r4
+        XOR2    r1, r2                  ; the paper becomes the ink ...
+        LSL2    r2, r3
+        XOR2    r1, r2                  ; ... and the ink the paper
         STR     r1, r0
 cursor_ret:
         RET
@@ -2319,18 +2388,26 @@ cmove_down:
 @done:  DROP
         RET
         HEAD    w_page, w_spaces, "PAGE", 4, 0, 0
-        MOVI2   r4, TEXT >> 16          ; the screen blank, the cursor at the top
-        MOVI2   r2, 16
-        LSL2    r4, r2
-        MOV2    r8, T
-        LIT     60 * 80 - 1
-        MOVR    r7, T
-        MOV2    T, r8
+        MOVI2   r0, 0                   ; the text window blank, not scrolled, the
+        STR3    r0, r30, G_WOFF         ; cursor at its top (the rows outside it stay)
+        CALL    set_scroll
+        LDR3    r1, r30, G_WTOP
+        CALL    row_addr
+        MOV2    r4, r0
+        LDR3    r1, r30, G_WROWS        ; rows * 80 - 1 words
+        MOVI2   r2, 4
+        LSL3    r3, r1, r2
+        MOVI2   r2, 6
+        LSL2    r1, r2
+        ADD2    r1, r3
+        DECR    r1
+        MOV2    r7, r1
         CALL    blank_words
         MOVI2   r0, 0
-        STR3    r0, r30, G_ROW
         STR3    r0, r30, G_COL
         STR3    r0, r30, G_CURSOR
+        LDR3    r0, r30, G_WTOP
+        STR3    r0, r30, G_ROW
         RET
         HEAD    w_atxy, w_page, "AT-XY", 5, 0, 0
         MOVR    r1, T                   ; ( col row -- ): the screen's cursor
@@ -2344,7 +2421,34 @@ cmove_down:
         STR3    r0, r30, G_COL
         STR3    r1, r30, G_ROW
         RET
-        HEAD    w_accept, w_atxy, "ACCEPT", 6, 0, 0
+; TEXT-WINDOW ( top rows -- ): rows top .. top + rows - 1 are the text window, the
+; rows that scroll; then PAGE (the window blank, the cursor at its top). top 0 .. 59,
+; rows 1 .. 60 - top (clamped). The rows outside it keep their text and do not
+; scroll: graphics (the mode RAM), a status line, ...
+        HEAD    w_twin, w_atxy, "TEXT-WINDOW", 11, 0, 0
+        MOVR    r1, T                   ; rows
+        DROP
+        MOVR    r0, T                   ; top
+        DROP
+        MOVI2   r2, 59
+        MINU2   r0, r2
+        MOVI2   r2, 60
+        SUB2    r2, r0                  ; the rows from top down
+        MINU2   r1, r2
+        CMPI2   r1, 0
+        B       NE, @ok
+        MOVI2   r1, 1
+@ok:    STR3    r0, r30, G_WTOP
+        STR3    r1, r30, G_WROWS
+        B       A, w_page
+; TEXT-WINDOW@ ( -- top rows ): the text window
+        HEAD    w_twinat, w_twin, "TEXT-WINDOW@", 12, 0, 0
+        DUP
+        LDR3    T, r30, G_WTOP
+        DUP
+        LDR3    T, r30, G_WROWS
+        RET
+        HEAD    w_accept, w_twinat, "ACCEPT", 6, 0, 0
         OVER                            ; ( a n -- n' ): a line, edited with BS
         ADD
         OVER                            ; ( a end p )
@@ -3263,6 +3367,7 @@ errword:
         SEI
         B       A, @line
         HEAD    w_cold, w_quit, "COLD", 4, 0, 0
+        MOVI2   r14, 0                  ; no loader's row: the cursor on row 8
         B       A, cold
 
 ; ---------------------------------------------------------------- defining words
