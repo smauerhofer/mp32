@@ -26,7 +26,7 @@
 //     57 AB 01  + 8   a keyboard report: modifiers, 0, six key codes (USB HID boot)
 //     57 AB 02  + 4   a mouse report: buttons, dx, dy, wheel (signed bytes)
 //     57 AB 04  + 7   an absolute mouse (states 3/4): taken and ignored
-//     57 AB 80  + 1   status: FF at start, then 3N with N the keyboard's LEDs as set
+//     57 AB 80  + 1   status: FF at start, then 3N: N the lock keys held down now
 //     57 AB 10  + 4   VID/PID: taken and ignored
 //     57 AB 12  + 8   a keep-alive (from another upper computer): taken and ignored
 //     57 AB 82  + 1   a heartbeat (states 0/1): taken and ignored
@@ -49,7 +49,10 @@
 //               PID 1  PID 2       status, version (as a real upper chip sends them)
 //
 //   LED: bit 0 Num Lock, bit 1 Caps Lock, bit 2 Scroll Lock, as USB orders them. The
-//   chip answers 57 AB 80 3N, N the LEDs it set (ECHO in STATUS). A frame goes out
+//   chip passes them on to the keyboard and does not answer. Its own 57 AB 80 3N
+//   (ECHO in STATUS) comes when a lock key goes down or up on the keyboard: N the lock
+//   keys held, in the same bits (Caps Lock held: 32, let go: 30). Seen on the board,
+//   2026-11-28; kvm-serial's CH9350L_PROTO.md gives the same. A frame goes out
 //   when LEDS is written, when TXEN goes to 1, and every KEEP ticks while TXEN is 1
 //   (a real upper chip sends one about every second).
 //
@@ -67,7 +70,8 @@
 //                         bit  6     SYNC   bytes that began no frame, or a frame cut
 //                                           short (stays 1)
 //                         bits 15..8 ECHO   the byte of the last 57 AB 80: FF after
-//                                           reset; 3N once the chip set the LEDs to N
+//                                           reset and at the chip's start; then 3N,
+//                                           N the lock keys held down (not LEDS)
 //                         bits 19..16       how many keyboard reports wait
 //                  write: a 1 in bit 3, 4, 5 or 6 clears that bit
 //

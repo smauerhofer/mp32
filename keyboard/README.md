@@ -19,7 +19,7 @@ make clean      throw away what the build made
 | file | what |
 |---|---|
 | `keyboard.v` | the device: the receiver, the frames, the report queue, the mouse's sums, the transmitter of the LEDs, the registers |
-| `ch9350.v` | the module for the test bench: sends frames, takes our keep-alives, checks them and answers `57 AB 80 3N` |
+| `ch9350.v` | the module for the test bench: sends frames, takes our keep-alives and checks them (no answer, as the chip); `57 AB 80 3N` when the test bench says |
 | `keyboard_tb.v` | the test bench |
 
 The receiver and the transmitter are the serial port's: `../uart/uart_rx.v` and
@@ -46,14 +46,15 @@ swings to 5 V, and the GW2AR's pins take 3.3 V at most. Measure TX at rest: if i
 about 5 V, put a divider before pin 42:
 
 ```
-module TX ---[ 1k ]---+--- pin 42
-                      |
-                    [ 2k ]
-                      |
-                     GND
+module TX ---[ 2k2 ]---+--- pin 42
+                       |
+                     [ 3k3 ]
+                       |
+                      GND
 ```
 
-(2.2k / 3.3k works too.) Pin 41 at 3.3 V into RX is high enough for the chip at 5 V.
+(5 V x 3.3 / 5.5 = 3.0 V; 1k / 2k works too.) Built this way, the keyboard works on
+the board. Pin 41 at 3.3 V into RX is high enough for the chip at 5 V.
 
 The DIP switch, read at power-up only (change it with the power off). A switch that is
 ON ties its pin to GND: ON = 0, OFF = 1 (the board marks 0 above, 1 below).
@@ -80,7 +81,7 @@ At `$FFFF_0600`, interrupt line 4 (vector 20). `keyboard.v` describes every bit.
 
 | offset | name | |
 |---|---|---|
-| +0 | STATUS | bit 0 KEY (a report waits), 1 MOUSE (the mouse moved), 2 TXBUSY, 3 LOST, 4 GONE (a device plugged in or out), 5 FERR, 6 SYNC; bits 15..8 ECHO (the chip's last `57 AB 80`: `FF`, then `3N`); bits 19..16 the reports waiting. Write 1 to clear bits 3..6 |
+| +0 | STATUS | bit 0 KEY (a report waits), 1 MOUSE (the mouse moved), 2 TXBUSY, 3 LOST, 4 GONE (a device plugged in or out), 5 FERR, 6 SYNC; bits 15..8 ECHO (the chip's last `57 AB 80`: `FF` at start, then `3N`, N the lock keys held down: Caps Lock held `32`, let go `30`); bits 19..16 the reports waiting. Write 1 to clear bits 3..6 |
 | +4 | KEYS0 | the first report: modifiers (7..0), reserved, key 1, key 2 |
 | +8 | KEYS1 | keys 3 to 6; reading it takes the report (read KEYS0 first) |
 | +12 | MOUSE | sum of dx (15..0), sum of dy (31..16) since the last read, signed; reading takes them |
@@ -124,12 +125,16 @@ chips (`docs/CH9350L_PROTO.md` of github.com/sjmf/kvm-serial):
 57 AB 12  00 00  00 00  LED  07  AC 20
 ```
 
-and the chip answers `57 AB 80 3N`, N the LEDs it set (ECHO). The datasheet gives
-the LED byte (bit 0 Num, 1 Caps, 2 Scroll) but not the rest of the frame in state 2;
-the bytes after it are those a real upper chip was seen to send.
+The chip passes the LEDs on to the keyboard and does **not** answer. The datasheet
+gives the LED byte (bit 0 Num, 1 Caps, 2 Scroll) but not the rest of the frame in
+state 2; the bytes after it are those a real upper chip was seen to send.
+
+The chip's own `57 AB 80 3N` (ECHO) comes when a lock key goes down or up on the
+keyboard: N the lock keys held, in the same bits. On the board (2026-11-28): ECHO is
+`30`, `32` while Caps Lock is held, `30` again when it is let go; writing LEDS leaves
+it alone.
 
 ## Not yet
 
-- tried in simulation only: on the board, check ECHO after writing LEDS. If it stays
-  `FF` or `30`, the chip does not take our keep-alive: look at the wiring of RXD first
-- no driver in the operating system yet
+- on the board (2026-11-28): the keyboard, the keyboard's LEDs (written with LEDS)
+  and ECHO work, with the divider above; the mouse is not tried yet

@@ -8,7 +8,9 @@
 //   rx   from our kbd_tx: it takes every byte, cuts them into frames 57 AB 12 + 8
 //        bytes, checks each against what an upper computer sends
 //          57 AB 12 00 00 00 00 LED 07 AC 20      (LED: bits 2..0, the rest 0)
-//        and answers, as the chip does, 57 AB 80 3N with N the LEDs (after ANSWER ns)
+//        and keeps the LEDs (leds). It does not answer: the real chip does not.
+//        Its 57 AB 80 3N comes when a lock key goes down or up on the keyboard (N the
+//        lock keys held): the test bench sends it with status().
 //
 // The test bench sends with the tasks below. Every task that puts bytes on tx takes
 // the wire for the whole frame (lock), so that an answer never cuts into a frame.
@@ -23,8 +25,6 @@ module ch9350 (
 );
     real    bit_ns    = 1.0e9 / 115200.0;
     real    rx_bit_ns = 1.0e9 / 115200.0;
-    integer ANSWER    = 300_000;        // 0.3 ms before the answer to a keep-alive
-    reg     answers   = 1;              // 0: it never answers
 
     // ================================================================ sending
     reg lock = 0;
@@ -131,7 +131,6 @@ module ch9350 (
     reg  [2:0] leds    = 0;             // the LEDs of the last good keep-alive
     reg  [7:0] b;
     integer    i;
-    reg        to_answer = 0;
 
     // What byte k of a keep-alive must be, with its LEDs l.
     function [7:0] want(input integer k, input [7:0] l);
@@ -169,20 +168,9 @@ module ch9350 (
                 nbytes = 0;
                 frames = frames + 1;
                 leds   = got[7][2:0];
-                if (answers) to_answer = 1;
             end else
                 nbytes = nbytes + 1;
         end
     end
 
-    // The answer, ANSWER ns after the keep-alive: 57 AB 80 3N, with the LEDs of the
-    // last keep-alive when the wire is free. A keep-alive that comes while an answer
-    // waits for the wire is answered after it.
-    always begin
-        wait (to_answer);
-        #(ANSWER);
-        while (lock) #1000;
-        to_answer = 0;
-        status({5'b00110, leds});
-    end
 endmodule

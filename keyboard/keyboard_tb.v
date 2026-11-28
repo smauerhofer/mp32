@@ -23,8 +23,9 @@
 //      (5 ms of silence): SYNC, and the reports after them right
 //   8. a byte without its stop bit: FERR
 //   9. the LEDs: a write with TXEN at 0 sends nothing; TXEN sends at once; each write
-//      sends, the chip answers 80 3N (ECHO); writes while a frame goes out: the last
-//      LEDs win; the keep-alive repeats; TXEN at 0 stops it
+//      sends, and ECHO does not follow it; 80 3N from a lock key held on the keyboard
+//      does (ECHO); writes while a frame goes out: the last LEDs win; the keep-alive
+//      repeats; TXEN at 0 stops it
 //  10. the chip 3 % fast, then 3 % slow: reports and the mouse still right
 //  11. GONE after a replug lets a held key come up
 
@@ -310,19 +311,22 @@ module keyboard_tb;
         ms(2);
         check(kb.frames, frames0 + 1, "TXEN: one keep-alive");
         check(kb.leds, 3'b010, "TXEN: Caps Lock sent");
-        expect(STATUS, 32'h00003200, "ECHO 32");
+        expect(STATUS, 32'h00003000, "ECHO stays 30: the chip does not answer");
+        kb.status(8'h32);                               // Caps Lock held on the keyboard
+        expect(STATUS, 32'h00003200, "ECHO 32: Caps Lock held");
         wr(LEDS, 3'b101);                               // Num Lock and Scroll Lock
         ms(2);
         check(kb.frames, frames0 + 2, "LEDS: one more keep-alive");
         check(kb.leds, 3'b101, "LEDS: Num and Scroll sent");
-        expect(STATUS, 32'h00003500, "ECHO 35");
+        expect(STATUS, 32'h00003200, "ECHO still 32: not our LEDs");
         wr(LEDS, 3'b001);                               // three writes in a row
         wr(LEDS, 3'b011);
         wr(LEDS, 3'b111);
         ms(3);
         check(kb.frames, frames0 + 4, "three writes: two keep-alives");
         check(kb.leds, 3'b111, "three writes: the last LEDs");
-        expect(STATUS, 32'h00003700, "ECHO 37");
+        kb.status(8'h30);                               // Caps Lock let go
+        expect(STATUS, 32'h00003000, "ECHO 30: Caps Lock let go");
         frames0 = kb.frames;
         #(3 * KEEP * TICK + 1_000_000);                 // the keep-alive, by itself
         check(kb.frames, frames0 + 3, "the keep-alive repeats");
@@ -344,7 +348,7 @@ module keyboard_tb;
         check(kb.bad, 0, "the module saw nothing wrong");
         kb.keyboard(64'h0, 1);
         expect_report(64'h0, "C up");
-        expect(STATUS, 32'h00003400, "STATUS after the LEDs");
+        expect(STATUS, 32'h00003000, "STATUS after the LEDs");
 
         // ---- 10. the chip 3 % fast, then 3 % slow
         kb.bit_ns = 0.97e9 / 115200.0;
@@ -358,7 +362,7 @@ module keyboard_tb;
         expect_report(64'h0, "Alt Z up, 3 % slow");
         rd(MOUSE); check(r, 32'hFFE0_0020, "MOUSE, 3 % fast and slow");
         rd(BUTTONS); check(r, 32'h0000_0200, "the wheel, 3 % fast and slow");
-        expect(STATUS, 32'h00003400, "no error at 3 %");
+        expect(STATUS, 32'h00003000, "no error at 3 %");
 
         // ---- 11. a held key, then the keyboard goes away
         kb.keyboard(64'h0000_2800_0000_0000, 3);        // Return held
