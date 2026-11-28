@@ -83,10 +83,16 @@ bitstream starts it again.
 The places it looks in phase 2, in this order:
 
 1. **the SPI flash**, at `$400000` (`FLASH_IMAGE`; the bitstream is at 0, 8 MB in all)
-2. **the microSD card**, from block 0 (`SD_LBA`): the raw card, no file system. SDHC,
-   SDXC and SDSC cards; it starts the card at 396 kHz, then reads at 21 MHz
+2. **the microSD card**, from its block 8 (`SD_LBA`: FORTH's block 1, the range
+   `BOOT`; FORTH's volume block is the card's blocks 0 .. 7): the raw card, no file
+   system. SDHC, SDXC and SDSC cards; it starts the card at 396 kHz, then reads at
+   21 MHz
 3. **the serial port**: it says `serial port: send the image` and waits as long as it
    takes; whatever comes before the image's first word is skipped
+
+**S2 held** when the loader starts (reset, S1): it passes over the flash and the card
+(`S2: the flash and the card passed over`) and boots from the serial port, a way out
+of a bad image there.
 
 A place with no image, or one with a bad header, is passed over: the next one is
 tried. Only the serial port, the last place, fails phase 2 (with a bad header). The
@@ -102,6 +108,11 @@ sd card: loading 00000660 bytes to 00000000 ok, start at 00000000
 ```
 
 (and `bad header`, `bad checksum`, `read error`, `no card`; a dot for every 64 KB).
+
+The loader reads the card's blocks to their end (and their CRC) before it lets the
+card go, also after `no image` or a `bad header`: a card deselected in the middle of
+a block goes on sending it when it is selected again, and takes no command until it
+is done (the OS would find it busy).
 
 Loading from the serial port, the loader writes the `loading ...` line to the screen
 while the image comes in and to the serial port only once it is all there (without
@@ -136,9 +147,11 @@ image is reported, and the next place is tried.
   flash's pins (59 .. 62) belong to the FPGA only after configuration, and only with
   `gowin_pack --mspi_as_gpio` (in the Makefile). With Gowin's programmer: External
   Flash Mode, exFlash C Bin Erase, Program, address `0x400000`.
-- **card:** the image raw from block 0, e.g. as administrator in the MinGW shell
-  `dd if=build/os.img of=/dev/sdX` (find X with `cat /proc/partitions`; this
-  overwrites the card's partition table), or with a raw disk writer.
+- **card:** FORTH puts it there (the card is FORTH's, it never goes into a PC):
+  boot FORTH, type `INSTALL`, and `boot_serial.py --terminal-only --send
+  build/os.img` sends the image when FORTH asks for it (`make install` in
+  `../forth` for FORTH itself). It goes to the card's block 8 on (FORTH's range
+  `BOOT`, `../forth/memory.md`).
 - **serial port:** `make boot-serial PORT=/dev/ttyS3` (COM4) does it all: it loads
   the bitstream into the board (which starts the loader again), waits until the
   loader asks for the image, sends it and then shows what the board says (Ctrl-C to
@@ -161,6 +174,11 @@ Errors that should not happen in the loader (an undefined opcode, an exception, 
 interrupt) are caught by its own vector table: it says so and stops.
 
 ## The operating system
+
+The operating system is FORTH now: `../forth` (`forth.s`, built there into
+`build/forth.img`, loaded by the loader like any image; see `../forth/README.md`).
+`../forth`'s `make boot-serial` boots it over the serial port with the bitstream of
+this directory and then gives a terminal (`boot_serial.py --terminal`).
 
 `os.s`, the demo that used to be the boot program, linked with `os.cfg` to run from
 0: its vector table first (256 entries), then the code. It clears the screen (green on black),
@@ -290,11 +308,10 @@ RAM:
     make fonts-sd       build/fonts.bin: the four fonts, raw, 8 KB (16 blocks)
                         (and build/petscii.bin: the PETSCII font with 3 empty ones)
 
-On the card they start at block `FONT_LBA` = 16384 (8 MB; the boot image is from block
-0 and ends below it): font n of `fonts.bin` in blocks 16384 + 4n .. + 4n + 3. As
-administrator in the MinGW shell (X from `cat /proc/partitions`):
-
-    dd if=build/fonts.bin of=/dev/sdX bs=512 seek=16384
+On the card they are in FORTH's range `FONTS` (FORTH's block 256 on, the card's
+block 2048 on): font n of `fonts.bin` in the card's blocks 2048 + 4n .. + 4n + 3.
+FORTH writes them: type `256 RECEIVE` at FORTH's terminal while `make fonts PORT=COM4`
+(in `../forth`) runs, which sends `build/fonts.bin` when FORTH asks for it.
 
 A font is 2,048 bytes as the font RAM holds them: 8 a character, the top row first,
 bit 7 the pixel on the left (`../display2/tools/font_bin.py`).
@@ -315,13 +332,13 @@ second and at each write. All the registers are described in `keyboard.v`;
 ## Not yet
 
 - a handler for the sound's interrupt in the operating system
-- FORTH words to load a font from the card (`../forth/memory.md`, the SD card)
-- a driver in the operating system for the keyboard and the mouse (the device is
-  there, `../keyboard`): key codes to characters, as chapter 22 of the book does
+- the mouse in the operating system (FORTH has the keyboard: key codes to characters,
+  the US layout)
 - the keyboard and the mouse on the board: the frames and the LEDs are tried in
   simulation only (`../keyboard/ch9350.v`, a model of the chip on both wires)
 - a garbage collector, a monitor
-- a file system on the card: the loader reads the raw card
+- a file system on the card: the loader reads the raw card, FORTH uses it as raw
+  blocks (`../forth/memory.md`, the SD card; `FONT` loads a font from it)
 - the flash is only read: writing it (erase, page program) is up to a program
 - the flash's pins on the board: tried in simulation only. If the loader always says
   `flash: no image` with an image at `$400000`, check `--mspi_as_gpio` and the pins

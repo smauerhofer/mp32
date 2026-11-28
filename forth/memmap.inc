@@ -25,7 +25,21 @@ OUTQ        = SYSTEM + $0800    ; the serial port's output queue, 1024 bytes
 OUTQ_SIZE   = 1024
 DRIVERS     = SYSTEM + $0C00    ; the drivers' state (keyboard, screen), 1 KB
 OPERATOR    = SYSTEM + $1000    ; OPERATOR's task area (below), 4 KB
-FREE0       = SYSTEM + $2000    ; free, 24 KB (block buffers, ...)
+LEAVES      = SYSTEM + $2000    ; the LEAVE stack of the compiler: 64 cells
+SBUF        = SYSTEM + $2100    ; S" while interpreting: the string, 256 bytes
+BUFS        = SYSTEM + $2200    ; the block buffers: NBUF of 4 KB
+NBUF        = 4
+BTAB        = SYSTEM + $6200    ; for each buffer: its block (-1: none), changed (8 bytes)
+CRC_TAB     = SYSTEM + $6220    ; the CRC-32's table (256 words), made by COLD
+FREE0       = SYSTEM + $6620    ; free, 6.5 KB
+
+; the drivers' state (DRIVERS, G_DRV): only the keyboard's handler uses it
+D_PREV      = 0                 ; the last report's six key codes (8 bytes)
+D_CAPS      = 8                 ; Caps Lock: 0 off, 1 on
+D_SAVE      = 16                ; r0 .. r7 while the handler runs (32 bytes)
+D_NEW       = 48                ; the report just read (8 bytes)
+SD_CSD      = DRIVERS + $40     ; the card's CSD (16 bytes, as it sends them)
+SD_CID      = DRIVERS + $50     ; its CID (16 bytes)
 
 ; ---------------------------------------------------------------- OPERATOR
 ; the terminal task that runs the interpreter after COLD; its stacks are the big ones
@@ -52,7 +66,33 @@ TASK_RS     = 1024              ; return stack, 256 cells (64 of them headroom)
 TASK_PS     = 1024              ; parameter stack, 256 cells
 
 ; ---------------------------------------------------------------- the SD card
-FONT_LBA    = 16384             ; the fonts (fonts.bin): font n in blocks FONT_LBA + 4n ..
+; (the fonts: the range FONTS, font n in the card's blocks 8 * first + 4n ..)
+BLK_LBA     = 0                 ; FORTH's block u (4 KB): the card's blocks BLK_LBA + 8u ..
+BLK_SIZE    = 4096              ; + 7, as many as the card holds (its CSD)
+BLK_SHIFT   = 3                 ; the card's blocks (512 bytes) in one: 1 << BLK_SHIFT
+; a source block: a header of 64 bytes, then 56 lines of 72 characters (4,032 bytes)
+SRC_MAGIC   = $900DF00D         ; the header's first word (bytes 0D F0 0D 90): a source block
+SRC_HEAD    = 64                ; the header's size
+SRC_COLS    = 72
+SRC_ROWS    = 56
+SRC_TITLE   = 4                 ; the header: the title (32 characters, INDEX shows it)
+SRC_TLEN    = 32
+SRC_NEXT    = 36                ; the block LOAD goes on with (CHAIN), 0 none
+SRC_SHADOW  = 40                ; the block that documents this one (SHADOW, DOC), 0 none
+SRC_VERSION = 44                ; + 1 each time it is written (0: never, no CRC)
+SRC_CRC     = 48                ; the CRC-32 of the text, as it was written
+                                ; (52 .. 63: not defined yet)
+
+; the volume block: FORTH's block 0 describes the card
+VOL_MAGIC   = $900DCA4D         ; its first word
+VOL_VERSION = 4                 ; the layout's version: 1
+VOL_STARTUP = 8                 ; the block COLD loads (0 none; S2 held: none)
+VOL_NAME    = 16                ; the card's name (32 characters)
+VOL_RANGES  = 64                ; the ranges: 16 bytes each, up to a name that is 0:
+VOL_ENTRY   = 16                ;   +0 the name (8 characters, capitals, spaces after),
+                                ;   +8 the first block, +12 how many
+FONT_BLOCK  = 256               ; the fonts without a volume (or a range FONTS)
+SD_SLOW     = 52 << 8           ; the card's CTRL: DIV 52, 396 kHz (to start it)
 
 ; ---------------------------------------------------------------- the screen
 TEXT        = $780000           ; 60 rows of 80 cells
@@ -81,6 +121,40 @@ G_FORTHWL   = $38 - $80         ; the FORTH word list: its newest word
 G_SCREEN    = $3C - $80         ; facility: the task that owns the screen, 0 = free
 G_SERIAL    = $40 - $80         ; facility: the serial port's output
 G_KEYS      = $44 - $80         ; facility: the input
+; constants COLD puts here, so the handlers reach them with one LDR3 (they may use
+; neither T nor a LIT)
+G_UART      = $48 - $80         ; $FFFF_0000 the serial port
+G_IRQC      = $4C - $80         ; $FFFF_0400 the interrupt controller
+G_VIDEO     = $50 - $80         ; $FFFF_A000 the video registers
+G_KBD       = $54 - $80         ; $FFFF_0600 the keyboard and the mouse
+G_INQB      = $58 - $80         ; INQ: the input queue's address
+G_OUTQB     = $5C - $80         ; OUTQ
+G_QMASK     = $60 - $80         ; 1023: a queue index, round
+G_DRV       = $64 - $80         ; DRIVERS: the drivers' state
+; the compiler (only OPERATOR compiles)
+G_LAST      = $68 - $80         ; the xt of the newest header (IMMEDIATE, RECURSE, ;)
+G_LSP       = $6C - $80         ; the LEAVE stack (LEAVES), at compile time
+G_CALLAT    = $70 - $80         ; the last call compiled: its address ...
+G_CALLEND   = $74 - $80         ; ... HERE right after it ...
+G_CALLXT    = $78 - $80         ; ... and the word it calls (; makes it a jump)
+G_LABEL     = $7C - $80         ; the last place a branch goes to (no tail call there)
+; the terminal and the errors
+G_CRLF      = $80 - $80         ; ACCEPT ended at a CR: an LF right after it is skipped
+G_CURSOR    = $84 - $80         ; the cursor is shown (KEY waits)
+G_ERRADDR   = $88 - $80         ; the word the error is about (its name) ...
+G_ERRLEN    = $8C - $80         ; ... and its length
+G_ABORTMSG  = $90 - $80         ; ABORT": the message (a counted string)
+G_EXCPC     = $94 - $80         ; an exception: where it happened
+G_LEDS      = $98 - $80         ; $FFFF_0200 the LEDs
+G_KTAB      = $9C - $80         ; the keyboard's table (key codes to characters)
+; the SD card and the blocks
+G_SD        = $A0 - $80         ; $FFFF_0100 the card
+G_SDHC      = $A4 - $80         ; the card: -1 not started, 0 byte addresses (SDSC), 1 blocks
+G_BNEXT     = $A8 - $80         ; the buffer to be taken next (round)
+G_BCUR      = $AC - $80         ; the buffer of the last BLOCK / BUFFER (UPDATE)
+G_SCR       = $B0 - $80         ; SCR: the block LIST showed last
+G_BLK       = $B4 - $80         ; BLK: the block LOAD interprets (0: none)
+G_SDBLKS    = $B8 - $80         ; the card's capacity in blocks of 512 bytes (0: not known)
 
 ; ---------------------------------------------------------------- the user area (r31)
 ; the scheduler's cells first: PAUSE uses them

@@ -26,6 +26,15 @@ With the `$80` bias one `LDR3` / `STR3` (offset -128 .. 127) reaches the first 2
 bytes of each. Interrupt handlers use GP only, never UP: they may come while PAUSE
 has r31 half way to the next task.
 
+The other registers (`forth.s`):
+
+| registers | what |
+|---|---|
+| T, S, R | the tops of the two stacks |
+| r0 .. r23 | scratch: free in every word, not kept across a call (r13 is the scratch of the macro `LDA`) |
+| r24 .. r29 | the interrupt handlers' own: no other code touches them, so a handler saves nothing but the flags (`PUSHF` / `POPF`). The keyboard's handler needs more and keeps r0 .. r7 in DRIVERS while it runs |
+| r30, r31 | GP, UP |
+
 ## The whole map
 
 | address | size | what |
@@ -55,7 +64,12 @@ it, change `SYSTEM` in `memmap.inc`.
 | `0800 - 0BFF` | 1 KB | the serial port's **output queue**: `EMIT` puts in, the handler (TXIE) sends |
 | `0C00 - 0FFF` | 1 KB | the drivers' state: the keyboard (shift, caps, dead keys), the screen |
 | `1000 - 1FFF` | 4 KB | **OPERATOR's task area** (below) |
-| `2000 - 7FFF` | 24 KB | free for now: block buffers for the card (`BLOCK`, 1 KB each), a file system |
+| `2000 - 20FF` | 256 B | `LEAVES`: the compiler's LEAVE stack (the `LEAVE`s of the loops being compiled) |
+| `2100 - 21FF` | 256 B | `SBUF`: the string of `S"` while interpreting |
+| `2200 - 61FF` | 16 KB | `BUFS`: the four block buffers (`BLOCK`), 4 KB each |
+| `6200 - 621F` | 32 B | `BTAB`: for each buffer its block (-1: none) and its state (bit 0 changed, 2: a damaged source block) |
+| `6220 - 661F` | 1 KB | `CRC_TAB`: the CRC-32 table (`crc_init` at `COLD`) |
+| `6620 - 7FFF` | 6.5 KB | free for now |
 | `8000 - BFFF` | 16 KB | OPERATOR's **return stack**: 4096 cells |
 | `C000 - FFFF` | 16 KB | OPERATOR's **parameter stack**: 4096 cells |
 
@@ -81,7 +95,44 @@ it, change `SYSTEM` in `memmap.inc`.
 | `003C` | -68 | `SCREEN` | facility: the task that owns it, 0 = free (`GET`, `RELEASE`) |
 | `0040` | -64 | `SERIAL` | facility: the serial port's output |
 | `0044` | -60 | `KEYS` | facility: the input |
-| `0048 - 03FF` | | | free |
+| `0048` | -56 | `G_UART` | `$FFFF_0000`: the device addresses and constants, put here by COLD, so a handler gets one with one `LDR3` (it may not use T for a `LIT`) |
+| `004C` | -52 | `G_IRQC` | `$FFFF_0400` |
+| `0050` | -48 | `G_VIDEO` | `$FFFF_A000` |
+| `0054` | -44 | `G_KBD` | `$FFFF_0600` |
+| `0058` | -40 | `G_INQB` | the input queue's address |
+| `005C` | -36 | `G_OUTQB` | the output queue's |
+| `0060` | -32 | `G_QMASK` | 1023: a queue's index, round |
+| `0064` | -28 | `G_DRV` | DRIVERS |
+| `0068` | -24 | `G_LAST` | the compiler: the newest header's xt (`IMMEDIATE`, `RECURSE`, `;`) |
+| `006C` | -20 | `G_LSP` | the LEAVE stack's pointer |
+| `0070 - 0078` | -16 .. -8 | `G_CALLAT`, `G_CALLEND`, `G_CALLXT` | the last call compiled: where, HERE after it, what it calls (`;` makes it a jump) |
+| `007C` | -4 | `G_LABEL` | the last place a branch goes to: no tail call there |
+| `0080` | 0 | `G_CRLF` | `ACCEPT` ended at a CR: an LF right after it is not a line |
+| `0084` | 4 | `G_CURSOR` | the cursor is shown (`KEY` waits) |
+| `0088`, `008C` | 8, 12 | `G_ERRADDR`, `G_ERRLEN` | the word an error is about |
+| `0090` | 16 | `G_ABORTMSG` | `ABORT"`: its message |
+| `0094` | 20 | `G_EXCPC` | an exception: where it happened |
+| `0098` | 24 | `G_LEDS` | `$FFFF_0200` |
+| `009C` | 28 | `G_KTAB` | the keyboard's table |
+| `00A0` | 32 | `G_SD` | `$FFFF_0100`: the SD card |
+| `00A4` | 36 | `G_SDHC` | the card: -1 not started yet, 0 byte addresses (SDSC), 1 block addresses |
+| `00A8` | 40 | `G_BNEXT` | the buffer taken next (in turn) |
+| `00AC` | 44 | `G_BCUR` | the buffer of the last `BLOCK` / `BUFFER` (`UPDATE`) |
+| `00B0` | 48 | `G_SCR` | `SCR` |
+| `00B4` | 52 | `G_BLK` | `BLK`: the block `LOAD` interprets, 0 none |
+| `00B8` | 56 | `G_SDBLKS` | the card's capacity in blocks of 512 bytes (from its CSD), 0 not known |
+| `00BC - 03FF` | | | free |
+
+### The drivers' state (SYSTEM + `0C00`, `G_DRV`)
+
+| + | what |
+|---|---|
+| `00` | the keyboard: the last report's key codes (8 bytes as KEYS0, KEYS1 give them) |
+| `08` | Caps Lock: 0 or 1 |
+| `10 - 2F` | r0 .. r7 while the keyboard's handler runs |
+| `30` | the report being looked at (8 bytes) |
+| `40 - 4F` | `SD_CSD`: the card's CSD (`SD-CSD`) |
+| `50 - 5F` | `SD_CID`: its CID (`SD-CID`) |
 
 ## A task area
 
@@ -208,23 +259,81 @@ L and HLIM are the same for all tasks; the tasks do not interrupt each other
 
 ## The SD card
 
-Raw blocks of 512 bytes, no file system yet:
+FORTH's own: raw blocks of 512 bytes, no file system, never in a PC. FORTH's blocks
+are 4 KB (`BLK_SIZE`): block u is the card's sectors 8u .. 8u + 7 (`BLK_LBA` 0), up to
+the card's capacity (its CSD: `BLOCKS`). FORTH puts everything on the card itself,
+the boot image and the fonts too (over the serial port: `INSTALL`, `RECEIVE`).
+`NEW-VOLUME` lays it out:
 
-| block | what |
+| FORTH's blocks | the range | what |
+|---|---|---|
+| 0 | | the **volume block** (`NEW-VOLUME`): `VOL_MAGIC` `$900DCA4D`, the card's name, the startup block, the ranges |
+| 1 .. 255 | `BOOT` | the boot image (`INSTALL`): the loader boots it from card sector 8 (`SD_LBA`) |
+| 256 .. 511 | `FONTS` | the fonts (`RECEIVE`): font n in card sectors 8 * 256 + 4n .. + 3, two to a block |
+| 512 .. 1023 | `SYSTEM` | the system's source blocks |
+| 1024 .. 65535 | `SOURCE` | the user's source blocks |
+| 65536 .. | `DATA` | data (the rest of the card); 4 MB = 1024 blocks is the card's erase unit: data rewritten often is best kept in whole 4 MB pieces, 1024-aligned |
+
+The **volume block** (block 0):
+
+| bytes | what |
 |---|---|
-| 0 .. | the boot image (`mp32img`), if the card is a boot method |
-| 16384 .. 16399 (`FONT_LBA`) | the fonts: `fonts.bin` (`../computer`: `make fonts-sd`), font n in blocks 16384 + 4n .. + 3 |
+| 0 .. 3 | `VOL_MAGIC` = `$900DCA4D` |
+| 4 .. 7 | the layout's version (1) |
+| 8 .. 11 | the startup block: `COLD` loads it (0: none; `STARTUP`) |
+| 16 .. 47 | the card's name (32 characters) |
+| 64 .. | the ranges, 16 bytes each, up to the first that begins with 0: the name (8 capitals, spaces after), the first block, how many blocks |
+
+`RANGE name` ( -- u n ) gives a range, `SET-RANGE` ( u n "name" -- ) changes one or
+adds one; `FONT` takes its fonts from `FONTS` (`FONT_BLOCK`, 256, on a card without a
+volume), `INSTALL` its image to `BOOT`.
+
+**S2** held at reset: the loader passes over the flash and the card (the serial port
+boots), and `COLD` does not load the startup block: a way out of a bad image or a
+startup block that hangs.
 
 The screen starts with font 0, PETSCII (`../computer/README.md`, the fonts); fonts 1
-.. 3 of the font RAM are empty. A FORTH word loads one from the card:
+.. 3 of the font RAM are empty. `FONT` loads one from the card:
 
     FONT ( n f -- )      font n of the card into font f of the font RAM
-                         (4 blocks from FONT_LBA + 4n to $FFFF_8000 + 2048 f)
+                         (card sectors 8 * FONTS + 4n .. + 3 to $FFFF_8000 + 2048 f)
 
-    1 1 FONT            \ bold (the card's font 1) into font 1
-    0 0 FONT            \ the old normal font instead of PETSCII
+    1 1 FONT            // bold (the card's font 1) into font 1
+    0 0 FONT            // the old normal font instead of PETSCII
+
+The fonts go onto the card once: `256 RECEIVE` at the terminal, then the PC sends
+`fonts.bin` (`make fonts PORT=COM4`, or `boot_serial.py --terminal-only --send
+../computer/build/fonts.bin`).
 
 A cell shows font f with f in its byte 1 (`COLOURS`, the globals).
+
+A **source block** (what `LOAD` and `LIST` take) is a header of 64 bytes, its first
+word `SRC_MAGIC` = `$900DF00D`, then the text: 56 lines of 72 characters (`SRC_ROWS`,
+`SRC_COLS`: 4,032 bytes), as many as fit the screen with a line number in front.
+`NEW-SOURCE` makes one, `LINE` gives a line's address. The header:
+
+| bytes | what |
+|---|---|
+| 0 .. 3 | `SRC_MAGIC` `$900DF00D` |
+| 4 .. 35 | `SRC_TITLE`: the title, 32 characters (`TITLE`, `INDEX`) |
+| 36 .. 39 | `SRC_NEXT`: `LOAD` goes on with this block (0: none; `CHAIN`) |
+| 40 .. 43 | `SRC_SHADOW`: the block that documents this one (0: none; `SHADOW`, `DOC`) |
+| 44 .. 47 | `SRC_VERSION`: + 1 every time the block is written |
+| 48 .. 51 | `SRC_CRC`: the CRC-32 of the text (bytes 64 .. 4095), written with it |
+| 52 .. 63 | 0, not defined yet |
+
+A source block read with a CRC that does not match (version not 0) is **damaged**:
+`LIST` and `LOAD` refuse it (`source block damaged (its CRC)`, -261) until it is
+read again (`EMPTY-BUFFERS`).
+
+`SD-READ` / `SD-WRITE` ( addr lba -- ior ) are the card's blocks themselves; `BLOCK`,
+`BUFFER`, `UPDATE`, `SAVE-BUFFERS`, `EMPTY-BUFFERS`, `FLUSH`, `LOAD`, `THRU`, `LIST`
+the standard words on FORTH's blocks, with the four buffers (`BUFS`, `BTAB`): a buffer
+that is needed for another block is written back first if it was changed. The card
+is started when it is first used, as the loader starts it (CMD0, CMD8, ACMD41,
+CMD58 or CMD16), then its CSD (CMD9: the capacity) and its CID (CMD10: maker,
+product, serial) are read, and it runs at 21 MHz; after an error it is started
+again the next time. `SD-INFO` shows what the CSD and the CID say.
 
 ## Changes to what is there
 

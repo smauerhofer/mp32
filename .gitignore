@@ -12,3 +12,4 @@ toolchain/bin/
 .vs/
 TestResults/
 *.user
+Claude outputs/

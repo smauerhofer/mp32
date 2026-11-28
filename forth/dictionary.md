@@ -151,24 +151,54 @@ newest of `CURRENT` (so `RECURSE` knows its xt); `;` clears HIDDEN.
 lines are: a `FOR ... NEXT` whose body fits in the rest of the line becomes
 `UNEXT`; otherwise `NEXT2` / `NEXT3`.
 
+## Control structures
+
+What the compiling words lay down (`forth.s`). A forward branch is a `CBRL` (20-bit
+offset: it reaches anywhere in a definition) whose offset `THEN`, `ELSE`, `REPEAT`,
+`LOOP` fill in later. Each place a branch goes to is remembered (`G_LABEL`): `;`
+makes no tail call into it.
+
+| words | code |
+|---|---|
+| `IF` | `CMPI2 T, 0` `DROP` `CBRL EQ, >` (the flag dropped either way: `DROP` keeps the flags) |
+| `ELSE` | `CBRL A, >`, and the `IF` goes here |
+| `BEGIN ... UNTIL` | `CMPI2 T, 0` `DROP` `CBRL EQ, <` |
+| `BEGIN ... AGAIN` | `CBRL A, <` |
+| `WHILE ... REPEAT` | `IF`, then `AGAIN` and `THEN` |
+| `DO` | `SWAP PUSH DROP PUSH DROP`: R = the index, under it the limit |
+| `?DO` | `CMP`, the same, then `CBRL EQ` to the loop's end, as a `LEAVE` |
+| `I`, `J` | `DUP MOVR T, R`; `DUP LDR3 T, RSP, 8` |
+| `LOOP` | `INCR R` `LDR3 r0, RSP, 4` `CMP2 R, r0` `CBRL NE, <`, then `UNLOOP` |
+| `+LOOP` | the index - limit before and after the add: their signs differ: out (`XOR2`, `CBRL PL, <`) |
+| `UNLOOP` | `LDR3 R, RSP, 8` `ADDI2 RSP, 8` (7 bytes, inlined) |
+| `LEAVE` | `CBRL A, >` to the loop's `UNLOOP`; the compiler keeps the `LEAVE`s on the LEAVE stack (`LEAVES`), a 0 for each loop |
+| `FOR ... NEXT` | `PUSH DROP`, then `UNEXT` when the body and the `NEXT` are in one line, else `NEXT2 R` / `NEXT3 R`: the body n + 1 times, `R@` the count |
+| `EXIT` | `RET` |
+| `." ..."`, `S" ..."`, `ABORT" ..."` | a call of `(.")`, `(S")`, `(ABORT")`, then the counted string; the word takes it from R and returns after it |
+| `DOES>` | a call of `(DOES>)`; the code after it is the `DOES>` part |
+
 ## The kernel's own words
 
-The kernel (`forth.s`) is assembled, and its words get the same headers, from a
-macro (the assembler has `.macro`, `.align`, `.set`):
+The kernel (`forth.s`) is assembled, and its words get the same headers from a macro
+(the assembler has `.macro`, `.align`):
 
-    .macro  WORD  label, name, len, flags, inl
+    .macro  HEAD  hxt, hprev, hname, hlen, hflags, hinl
             .align  16
-            .res    (12 - len) & 15         ; pad: name + header cell end at a line
-            .ascii  name
-            .word   _prev + (len << 27) + (inl << 23) + flags
-    label:                                  ; the xt: a 16-byte boundary
-    _prev   .set    label
+            .res    (12 - hlen) & 15        ; pad: name + header cell end at a line
+            .ascii  hname
+            .word   hprev + (hlen << 27) + (hinl << 23) + hflags
+    hxt:                                    ; the xt: a 16-byte boundary
     .endmacro
 
-            WORD    dup, "DUP", 3, 0, 1
+            HEAD    w_dup, 0, "DUP", 3, 0, 1
             DUP
             RET
 
-(the exact form is settled with the kernel's first words). The newest kernel word is
-where the `FORTH` word list starts after COLD; new words follow at HERE, right after
-the kernel's BSS.
+The assembler cannot fill in `hprev` (the word before) and `hlen` (the name's length)
+itself: a `.res` cannot depend on a label difference, and an equate cannot be set
+twice. `tools/heads.py` does it: `make` checks every `HEAD` (and `USERV`, `GLOBV`, the
+same with a user or global variable's offset) before it assembles, `make heads` fills
+them in. A new kernel word only needs its xt and its name right; write `_` for prev
+and len and run `make heads`. `KERNEL_LAST` (the last line of `forth.s`) is the newest
+word: where the `FORTH` word list starts after COLD; new words follow at HERE, right
+after the image.

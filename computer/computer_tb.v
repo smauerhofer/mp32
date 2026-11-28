@@ -67,7 +67,7 @@ module computer_tb;
 
     computer #(.UART_DIV(DIV)) dut (
         .clk(clk), .pixel_clk(pixel_clk), .reset(reset),
-        .buttons(2'b00), .leds(leds), .uart_rx(rx), .uart_tx(tx),
+        .buttons(buttons), .leds(leds), .uart_rx(rx), .uart_tx(tx),
         .sd_clk(c_clk), .sd_mosi(c_mosi), .sd_miso(c_miso), .sd_cs_n(c_cs_n),
         .flash_clk(f_clk), .flash_mosi(f_mosi), .flash_miso(f_miso), .flash_cs_n(f_cs_n),
         .hp_bck(bck), .hp_ws(ws), .hp_din(din), .pa_en(pa_en),
@@ -333,10 +333,11 @@ module computer_tb;
         end
     endtask
 
+    reg [1:0] buttons = 2'b00;
     integer t0, mark1;
     initial begin
         flash.load("os.img");
-        card.load("os.img");
+        card.load_at("os.img", 8 * 512);       // SD_LBA = 8: FORTH's block 1
         repeat (8) @(posedge clk);
 
         // ================================================ 1. from the flash
@@ -375,6 +376,14 @@ module computer_tb;
             $display("FAIL: the tone: %0d samples of +4000, expected 53", plus);
         end
         $display("   the echo, the screen, the beep (%0d samples of +4000, then -4000)", plus);
+
+        // ================================================ S2 held: the serial port
+        buttons = 2'b10;
+        restart;
+        expect({"mp32 boot", CRLF, "S2: the flash and the card passed over", CRLF,
+                "serial port: send the image", CRLF}, 10);
+        buttons = 2'b00;
+        $display("   S2 held at reset: straight to the serial port");
 
         // ================================================ 2. from the card
         flash.erase;

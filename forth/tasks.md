@@ -68,9 +68,22 @@ A sketch (not yet assembled; the loop's tests in words):
             RET                     ; into the task
 
 The `CLI` .. `SEI` keeps an interrupt out while the limits already belong to the new
-task and a pointer still to the old one: a push of the handler there would trap. The
-scan of the ring before it may be interrupted: the handler then runs on the old
-task's return stack, which is still whole.
+task and a pointer still to the old one: a push of the handler there would trap.
+
+The scan of the ring runs with interrupts off too (`forth.s`): a handler that wakes a
+task between the scan and the `WAIT` would not end the `WAIT`, so the wake-up would
+wait for the next interrupt. With I = 0 the `WAIT` ends as soon as a device asks, and
+nothing is taken; then
+
+            WAIT
+            SEI
+            B       A, @again       ; @again: CLI, the scan
+
+lets the interrupt in: `SEI` takes effect in execute, when the instructions after it
+are already fetched, so `SEI NOP CLI` would close the door before fetch could inject
+the `INTR`. A taken branch makes fetch start again at its target, and there it
+injects the interrupt before the `CLI` (as in `../cpu/isa.md`, WAIT). The handler
+runs on the old task's return stack, which is still whole.
 
 About 35 instructions from one task to the next. At 42 MHz, with the cache, that is
 on the order of a microsecond: a task that calls `PAUSE` in every loop costs little.
@@ -122,6 +135,12 @@ An example, once it is there:
               PAUSE  AGAIN ;
     TICKER                      \ a dot every second, while OPERATOR goes on
     TIMER HALT
+
+## What is there now
+
+`forth.s` has the ring with OPERATOR alone, `PAUSE`, `STOP`, `WAKE`, `SLEEP`, and `KEY`
+/ `EMIT` that sleep on the queues as above. `TASK`, `TERMINAL`, `BUILD`, `ACTIVATE`,
+`HALT`, `GET`, `GRAB`, `RELEASE`, `HIS`, `.TASKS` and `USER` are the next step.
 
 ## Later
 

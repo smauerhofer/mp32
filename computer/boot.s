@@ -11,7 +11,8 @@
 ;   2. find a boot method: the first place that holds an image with a good header,
 ;      in this order:
 ;        - the SPI flash, at $400000 (the bitstream is at 0; see FLASH_IMAGE)
-;        - the microSD card, from block 0 (the raw card, no file system; SD_LBA)
+;        - the microSD card, from block 8 (the raw card, no file system; SD_LBA)
+;        S2 held at reset: neither, the serial port at once
 ;        - the serial port: it waits for an image to come, as long as it takes
 ;      -> LED1 on
 ;      failed (the image from the serial port has a bad header):
@@ -67,7 +68,8 @@
 ;   r9  $100  r10 UART  r11 text  r12 column * 4  r13 LEDs  r14 the row's address
 ;   r16 the colors of a character (ink 82, paper 0, font 0)  r17 320 (a row)
 ;   r18 the end of the text  r20 the source (1 flash, 2 card, 3 serial port)
-;   r21 the source's SPI device (flash or card)  r22 the card: words left in the block;
+;   r21 the source's SPI device (flash or card)  r22 the card: words left in the block
+;       (-1: none);
 ;       the serial port: what putc writes to (0 both, 1 the screen only, 2 the serial
 ;       port only, see phase 3)
 ;   r23 the card: the next block  r24 the card: 1 = block addresses (SDHC), 0 = bytes
@@ -79,7 +81,8 @@ TEXT        = $780000
 TEXT_END    = $780000 + 60 * 320
 RAM_END     = $780000                   ; an image must end here (the screen)
 FLASH_IMAGE = $400000                   ; where the image is in the flash
-SD_LBA      = 0                         ; the card's block where the image begins
+SD_LBA      = 8                         ; the card's block where the image begins: FORTH's
+                                        ; block 1 (block 0 is FORTH's volume block)
 SD          = -$FF00                    ; $FFFF_0100: the microSD card
 FLASH       = -$FB00                    ; $FFFF_0500: the SPI flash
 SOUND       = -$FD00                    ; $FFFF_0300: the sound
@@ -161,6 +164,10 @@ start:  LIT     -$FE00                  ; $FFFF_0200: the LEDs
 ; ================================================================ 2. a boot method
         MOVI2   r1, LED0 | LED1
         STR     r1, r13
+        LDR3    r1, r13, 4              ; BUTTONS: S2 held? then the serial port only
+        MOVI2   r2, 2                   ; (an image on the flash or the card that
+        AND2    r1, r2                  ; does not work is passed over)
+        B       NE, @s2
 
 ; ---- the flash
         MOVI2   r20, 1
@@ -191,7 +198,7 @@ start:  LIT     -$FE00                  ; $FFFF_0200: the LEDs
         CMP2    r1, r31
         B       EQ, phase3
         CALL    puts
-        CALL    sd_close
+        CALL    sd_end                  ; (the rest of block 0 out first)
         B       A, @serial
 @read_error:
         CALL    sd_close
@@ -201,6 +208,10 @@ start:  LIT     -$FE00                  ; $FFFF_0200: the LEDs
         B       A, @serial
 @no_card:
         LEA     msg_no_card
+        MOVR    r6, T
+        CALL    puts
+        B       A, @serial
+@s2:    LEA     msg_s2
         MOVR    r6, T
         CALL    puts
 
@@ -415,7 +426,7 @@ close:  MOVI2   r1, 1
         B       EQ, flash_close
         MOVI2   r1, 2
         CMP2    r20, r1
-        B       EQ, sd_close
+        B       EQ, sd_end
         RET
 
 ; ================================================================ failed: stop
@@ -677,6 +688,7 @@ sd_init:
 ; sd_block: start reading block r23 (CMD17) and wait for its data; r22 = 128 words to
 ; go. r1 = 0, or != 0 when the card said no or never sent the block. Uses r1 .. r6.
 sd_block:
+        MOVI2   r22, -1                 ; no block being read (yet)
         MOVI2   r1, 1                   ; CS on, 21 MHz
         STR3    r1, r21, 8
         MOVR    T, r23                  ; the address: the block, or its first byte
@@ -725,6 +737,24 @@ sd_get32:
         DECR    r22
         MOVI2   r1, 0
 @err:   RET
+
+; sd_end: the rest of the block being read (r22 words, if r22 >= 0) and its CRC
+; clocked out, then sd_close. A card that is deselected in the middle of a block goes
+; on sending it when it is selected again, and takes no command until it is done.
+; Uses r1, r2, r22.
+sd_end: CMPI2   r22, 0
+        B       LT, sd_close
+@w:     CMP2    r22, r31
+        B       EQ, @crc
+        STR3    r25, r21, 12
+        LDR3    r2, r21, 12
+        DECR    r22
+        B       A, @w
+@crc:   MOVI2   r1, -1
+        CALL    spi_byte
+        MOVI2   r1, -1
+        CALL    spi_byte
+        MOVI2   r22, -1
 
 ; sd_close: CS off, and a byte of clocks so the card lets go of MISO.
 sd_close:
@@ -899,6 +929,7 @@ msg_bad_header: .asciiz "bad header\r\n"
 msg_bad_sum:    .asciiz "bad checksum\r\n"
 msg_read_error: .asciiz "read error\r\n"
 msg_no_card:    .asciiz "no card\r\n"
+msg_s2:         .asciiz "S2: the flash and the card passed over\r\n"
 msg_undefined:  .asciiz "\r\nundefined opcode\r\n"
 msg_unexpected: .asciiz "\r\nunexpected interrupt or exception\r\n"
 

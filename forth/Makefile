@@ -13,8 +13,15 @@
 #                   you type goes to FORTH (Ctrl-] to stop)
 #   make send PORT=COM4
 #                   only send build/forth.img, to a loader that waits for it
-#   make term PORT=COM4
-#                   only the terminal
+#   make term PORT=COM4 [SEND=file]
+#                   only the terminal (SEND: the file sent whenever the board asks
+#                   for an image: the loader, RECEIVE, INSTALL)
+#   make install PORT=COM4
+#                   the terminal; type INSTALL: build/forth.img goes onto the card
+#                   (the range BOOT), which then boots it
+#   make fonts PORT=COM4
+#                   the terminal; type 256 RECEIVE: ../computer/build/fonts.bin goes
+#                   onto the card (the range FONTS)
 #   make burn       write build/forth.img into the board's flash at $400000, where the
 #                   boot loader looks first (the bitstream at 0 stays)
 #   make clean
@@ -108,7 +115,13 @@ send: $(BUILD)/forth.img
 	$(PYTHON) $(COMP)/boot_serial.py --port $(PORT) --image $(BUILD)/forth.img --send-only
 
 term:
-	$(PYTHON) $(COMP)/boot_serial.py --port $(PORT) --terminal-only
+	$(PYTHON) $(COMP)/boot_serial.py --port $(PORT) --terminal-only $(if $(SEND),--send $(SEND))
+
+install: $(BUILD)/forth.img
+	$(PYTHON) $(COMP)/boot_serial.py --port $(PORT) --terminal-only --send $(BUILD)/forth.img
+
+fonts:
+	$(PYTHON) $(COMP)/boot_serial.py --port $(PORT) --terminal-only --send $(COMP)/build/fonts.bin
 
 burn: $(BUILD)/forth.img
 	openFPGALoader -b tangnano20k --external-flash -o $(OS_FLASH) --file-type bin $<
@@ -116,5 +129,5 @@ burn: $(BUILD)/forth.img
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all heads test test-quick boot-serial send term burn clean
+.PHONY: all heads test test-quick boot-serial send term install fonts burn clean
 .PRECIOUS: $(BUILD)/forth.o $(BUILD)/forth.bin
